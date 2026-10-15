@@ -1,0 +1,48 @@
+{
+  "schema_version": 2,
+  "kind": "financial",
+  "company": {
+    "name": "待识别公司",
+    "code": "000000",
+    "market": "SSE",
+    "industry": "待核对行业",
+    "financial_sector": false,
+    "identity_sources": [
+      {
+        "locator": "原文路径/页码",
+        "title": "公司身份资料"
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "locator": "原文路径/页码",
+      "title": "输入资料"
+    }
+  ],
+  "status": "partial",
+  "gaps": [
+    "将示例替换为实际公司与资料，不能直接作为研究结果"
+  ],
+  "as_of": "2026-10-05T12:00:00+08:00",
+  "periods": [
+    {
+      "label": "2025年度",
+      "start": "2025-01-01",
+      "end": "2025-12-31",
+      "currency": "CNY",
+      "scope": "consolidated",
+      "restated": false,
+      "rounding_unit": "1",
+      "items": {
+        "revenue": {
+          "value": null,
+          "unit": "元",
+          "references": [],
+          "missing_reason": "待从原文提取"
+        }
+      }
+    }
+  ],
+  "notes": []
+}

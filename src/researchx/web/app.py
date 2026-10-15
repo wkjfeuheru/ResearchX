@@ -7,6 +7,7 @@ from starlette.responses import Response
 from starlette.datastructures import UploadFile
 
 import asyncio
+import hashlib
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -21,6 +22,8 @@ from researchx.api.client import ApiMessageCompleteEvent, ApiMessageRequest
 from researchx.auth.manager import AuthManager
 from researchx.engine.messages import ConversationMessage
 from researchx.state.store import ResearchStore
+from researchx.state.deliveries import DeliveryService
+from researchx.state.errors import ResearchError
 from researchx.runtime import _resolve_api_client_from_settings
 from researchx.web.catalog import (
     models_list,
@@ -30,12 +33,12 @@ from researchx.web.catalog import (
     skill_detail,
     toggle_skill,
 )
-from researchx.web.models import ModelInput, SessionInput, SkillToggle, CommandRequest
+from researchx.web.models import ModelInput, SessionInput, SkillToggle, CommandRequest, ReviewRequest
 from researchx.web.runtime import SessionController
 from researchx.web.redaction import Redactor
 from researchx.web.session_view import session_view
 from researchx.web.workspace import WebWorkspace
-from researchx.web.events import SessionEventResponse
+from researchx.web.events import EventChannel, SessionEventResponse, encode_event
 from researchx.workspace.documents import MAX_DOCUMENT_BYTES
 from researchx.workspace.session_files import SessionFiles
 
@@ -101,12 +104,19 @@ def create_app(cwd: str | None = None, static_dir: Path | None = None) -> FastAP
         try:
             await database.check()
             with bind_database(database):
+                from researchx.storage.database import workspace_id
+                from researchx.storage.run_records import pause_unfinished_runs
+
+                await pause_unfinished_runs(workspace_id(workspace.cwd))
                 try:
                     yield
                 finally:
                     for connection in list(workspace.connections.values()):
                         await connection.close()
+                    for connection in list(workspace.active_runs.values()):
+                        await connection.close()
                     workspace.connections.clear()
+                    workspace.active_runs.clear()
         finally:
             await database.close()
 
@@ -144,7 +154,7 @@ def create_app(cwd: str | None = None, static_dir: Path | None = None) -> FastAP
             await database.check()
         except DatabaseConfigurationError as exc:
             raise HTTPException(503, str(exc)) from None
-        return {"status": "ok", "busy": workspace.lock.locked()}
+        return {"status": "ok", "busy": workspace.busy()}
 
     @app.get("/api/models")
     async def get_models() -> dict[str, object]:
@@ -249,14 +259,14 @@ def create_app(cwd: str | None = None, static_dir: Path | None = None) -> FastAP
     async def get_skills() -> dict[str, object]:
         return {"items": (skills_list(workspace.cwd))}
 
-    @app.patch("/api/skills/{plugin_id}")
-    async def patch_skill(plugin_id: str, data: SkillToggle) -> dict[str, object]:
-        (toggle_skill(workspace.cwd, plugin_id, data.enabled))
+    @app.patch("/api/skills/{skill_id}")
+    async def patch_skill(skill_id: str, data: SkillToggle) -> dict[str, object]:
+        (toggle_skill(workspace.cwd, skill_id, data.enabled))
         return {"ok": True}
 
-    @app.get("/api/skills/{plugin_id}/{skill_name}")
-    async def get_skill_detail(plugin_id: str, skill_name: str) -> dict[str, object]:
-        return skill_detail(workspace.cwd, plugin_id, skill_name)
+    @app.get("/api/skills/{skill_id}")
+    async def get_skill_detail(skill_id: str) -> dict[str, object]:
+        return skill_detail(workspace.cwd, skill_id)
 
     @app.get("/api/sessions")
     async def get_sessions() -> dict[str, object]:
@@ -285,7 +295,7 @@ def create_app(cwd: str | None = None, static_dir: Path | None = None) -> FastAP
         return SessionFiles(ResearchStore(workspace.cwd, session_id))
 
     def require_idle_files(session_id: str) -> None:
-        connection = workspace.connections.get(session_id)
+        connection = workspace.connections.get(session_id) or workspace.active_runs.get(session_id)
         if session_id in workspace.file_operations or (connection and connection.busy):
             raise HTTPException(409, "请等待文件操作或当前生成完成")
 
@@ -342,12 +352,96 @@ def create_app(cwd: str | None = None, static_dir: Path | None = None) -> FastAP
     async def list_artifacts(session_id: str) -> dict[str, object]:
         return {"items": (await (await session_files(session_id)).list("artifacts"))}
 
+    @app.get("/api/sessions/{session_id}/deliveries")
+    async def list_deliveries(session_id: str) -> dict[str, object]:
+        await workspace.record(session_id)
+        service = DeliveryService(ResearchStore(workspace.cwd, session_id))
+        return {"items": await service.list()}
+
+    @app.post("/api/sessions/{session_id}/deliveries/{delivery_id}/review")
+    async def review_delivery(
+        session_id: str, delivery_id: str, review: ReviewRequest
+    ) -> dict[str, object]:
+        await workspace.record(session_id)
+        from researchx.web.local_identity import local_reviewer
+
+        service = DeliveryService(ResearchStore(workspace.cwd, session_id))
+        try:
+            return await service.decide(
+                delivery_id,
+                review.decision,
+                review.note,
+                principal=local_reviewer(),
+                expected_manifest_hash=review.expected_manifest_hash,
+                reviewed_claim_ids=review.reviewed_claim_ids,
+            )
+        except ResearchError as exc:
+            message = str(exc)
+            if message == "Unknown delivery":
+                status = 404
+            elif "Incomplete" in message or "changed" in message or "不能" in message:
+                status = 409
+            else:
+                status = 422
+            raise HTTPException(status, message) from None
+
     @app.get("/api/sessions/{session_id}/artifacts/{file_id}/download")
     async def download_artifact(session_id: str, file_id: str) -> FileResponse:
         try:
             meta, path = await (await session_files(session_id)).artifact(file_id)
         except (ValueError, FileNotFoundError):
             raise HTTPException(404, "产物不存在或不属于当前会话") from None
+        if meta.get("kind") == "report_draft":
+            store = ResearchStore(workspace.cwd, session_id)
+            memory = await store.load()
+            artifact = next(
+                (item for item in memory.artifacts.values() if item.file_id == file_id), None
+            )
+            if artifact is None:
+                raise HTTPException(403, "报告尚未完成来源授权分类")
+            service = DeliveryService(store)
+            delivery = next(
+                (
+                    item
+                    for item in await service.list()
+                    if item["kind"] == "report_draft" and item["origin_id"] == artifact.id
+                ),
+                None,
+            )
+            if delivery is None:
+                raise HTTPException(403, "报告尚未冻结为可交付版本")
+            try:
+                await service.export_text(str(delivery["delivery_id"]))
+            except (ResearchError, FileNotFoundError):
+                raise HTTPException(403, "来源授权不足，不能下载此报告") from None
+            if hashlib.sha256(path.read_bytes()).hexdigest() != delivery["content_hash"]:
+                raise HTTPException(409, "报告文件与冻结版本不一致")
+        elif meta.get("kind") in {
+            "financial",
+            "monitor",
+            "digest",
+            "deep",
+            "financial-commentary",
+            "industry-commentary",
+            "industry-deep-dive",
+        }:
+            service = DeliveryService(ResearchStore(workspace.cwd, session_id))
+            delivery = next(
+                (
+                    item
+                    for item in await service.list()
+                    if item["kind"] == "report_file" and item["origin_id"] == file_id
+                ),
+                None,
+            )
+            if delivery is None:
+                raise HTTPException(403, "历史报告须重新核对来源并冻结版本后下载")
+            try:
+                body = await service.export_text(str(delivery["delivery_id"]))
+            except (ResearchError, FileNotFoundError):
+                raise HTTPException(403, "来源授权不足或版本已失效，不能下载此报告") from None
+            if hashlib.sha256(body).hexdigest() != hashlib.sha256(path.read_bytes()).hexdigest():
+                raise HTTPException(409, "报告文件与冻结版本不一致")
         return FileResponse(path, filename=meta["name"], media_type="application/octet-stream")
 
     @app.delete("/api/sessions/{session_id}")
@@ -358,12 +452,15 @@ def create_app(cwd: str | None = None, static_dir: Path | None = None) -> FastAP
             raise HTTPException(404, "会话不存在") from None
         if await workspace.store.records.load(session_id) is None:
             raise HTTPException(404, "会话不存在")
-        connection = workspace.connections.get(session_id)
+        connection = workspace.connections.get(session_id) or workspace.active_runs.get(session_id)
         if session_id in workspace.deleting:
             raise HTTPException(409, "会话正在删除")
         if session_id in workspace.file_operations:
             raise HTTPException(409, "请等待文件操作完成，再删除对话")
-        if connection and connection.busy:
+        if (
+            connection and (connection.busy or connection.accepting or connection.queued_request is not None)
+            or session_id in workspace._queued
+        ):
             raise HTTPException(409, "请先停止当前生成，再删除对话")
         workspace.deleting.add(session_id)
         deleted = False
@@ -374,7 +471,6 @@ def create_app(cwd: str | None = None, static_dir: Path | None = None) -> FastAP
             if connection:
                 await connection.emit("session_deleted")
                 await connection.channel.finish()
-            workspace.command_ids.pop(session_id, None)
         except OSError:
             raise HTTPException(500, "删除失败，请检查数据库连接后重试") from None
         finally:
@@ -397,28 +493,55 @@ def create_app(cwd: str | None = None, static_dir: Path | None = None) -> FastAP
         return Redactor().clean(dict(session_view(record)))
 
     @app.get("/api/sessions/{session_id}/events")
-    async def events(session_id: str) -> StreamingResponse:
+    async def events(
+        session_id: str,
+        last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    ) -> StreamingResponse:
         record = await workspace.record(session_id)
         if session_id in workspace.connections:
             raise HTTPException(409, "此会话已在另一个窗口打开")
-        connection = SessionController(session_id, workspace)
+        cursor = int(last_event_id) if last_event_id and last_event_id.isdigit() else 0
+
+        def event_cursor(item: dict[str, object]) -> int:
+            raw = item.get("event_id", 0)
+            return int(raw) if isinstance(raw, (int, str)) and not isinstance(raw, bool) else 0
+
+        live = workspace.active_runs.get(session_id)
+        if live is not None and (live.busy or live.queued_request is not None or live.accepting):
+            async with live.send_lock:
+                # Freeze the replay boundary while redirecting new events to
+                # the fresh channel. An event belongs to exactly one side.
+                live.channel = EventChannel()
+                replay = [item for item in live.event_log if event_cursor(item) > cursor]
+            connection = live
+        else:
+            connection = SessionController(session_id, workspace)
+            replay = []
         workspace.connections[session_id] = connection
 
         async def close() -> None:
             connection.channel.detach()
             with CancelScope(shield=True):
                 try:
-                    await connection.close()
+                    await connection.unsubscribe()
                 finally:
                     if workspace.connections.get(session_id) is connection:
                         workspace.connections.pop(session_id, None)
 
         async def stream() -> AsyncIterator[str]:
             try:
-                await connection.emit(
-                    "ready", session=session_view(record), connection_id=connection.connection_id
-                )
+                # The browser needs the active request ID before it can accept
+                # replayed run events. Ready is connection-local, not logged.
                 connection.ready = True
+                yield encode_event(connection.redactor.clean({
+                    "type": "ready", "session_id": session_id,
+                    "request_id": connection.request_id,
+                    "connection_id": connection.connection_id,
+                    "session": session_view(record),
+                    "running": connection.busy or connection.queued_request is not None or connection.accepting,
+                }))
+                for item in replay:
+                    yield encode_event(item)
                 async for frame in connection.channel.stream():
                     yield frame
             finally:
@@ -435,10 +558,13 @@ def create_app(cwd: str | None = None, static_dir: Path | None = None) -> FastAP
         connection_id: str | None = Header(default=None, alias="X-ResearchX-Connection"),
     ) -> dict[str, object]:
         (await workspace.record(session_id))
-        connection = workspace.connections.get(session_id)
+        connection = workspace.connections.get(session_id) or workspace.active_runs.get(session_id)
         if connection is None:
-            raise HTTPException(409, "请先连接会话事件流")
-        if connection_id != connection.connection_id:
+            if command.type not in {"submit", "resume"}:
+                raise HTTPException(409, "没有可控制的研究运行")
+            connection = SessionController(session_id, workspace)
+            connection.ready = True
+        elif connection_id and connection_id != connection.connection_id and session_id in workspace.connections:
             raise HTTPException(409, "命令不属于当前会话控制连接")
         return await connection.command(command)
 

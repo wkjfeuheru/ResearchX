@@ -40,16 +40,14 @@ async def installed_smoke():
     )
     assert any("/_web/index.html" in f for f in names)
     assert not any("skill-authoring/" in name or "skill-creator/" in name for name in names)
-    research_plugins = {
+    research_skills = {
         "financial-statement-analysis": ("financial", "analyze_statements"),
         "company-event-monitor": ("monitor", "normalize_events"),
         "deep-investment-report": ("deep", "forecast"),
         "research-report-digest": ("digest", "digest_reports"),
     }
-    for plugin, (_, script) in research_plugins.items():
-        package = "report-generation" if plugin == "deep-investment-report" else "analysis-modeling"
-        base = f"researchx/plugins/bundled/{package}/"
-        assert base + "plugin.json" in names
+    for plugin, (_, script) in research_skills.items():
+        base = "researchx/skills/bundled/"
         for resource in (
             "SKILL.md",
             f"scripts/{script}.py",
@@ -59,8 +57,8 @@ async def installed_smoke():
             "templates/input.schema.json",
             "templates/report.md",
         ):
-            assert base + f"skills/{plugin}/" + resource in names
-        assert base + f"skills/{plugin}/scripts/run.py" not in names
+            assert base + f"{plugin}/" + resource in names
+        assert base + f"{plugin}/scripts/run.py" not in names
     assert not any("/utils/" in name for name in names)
     assert not any("/tools/research/" in name for name in names)
     tool_modules = [
@@ -77,7 +75,7 @@ async def installed_smoke():
     assert "researchx/workspace/session_files.py" in names
     assert "researchx/workspace/documents.py" in names
     assert not any("sample_plugins" in f for f in names)
-    assert not any(f.startswith("researchx/skills/bundled/") for f in names)
+    assert not any(f.startswith("researchx/plugins/") for f in names)
     assert {e.name for e in dist.entry_points} == {"oh", "openh", "rx"}
     with tempfile.TemporaryDirectory() as tmp:
         cwd = Path(tmp)
@@ -85,10 +83,7 @@ async def installed_smoke():
         os.environ["RESEARCHX_DATA_DIR"] = str(cwd / "data")
         assert load_skill_registry(cwd).get("skill-creator") is None
         fixtures = Path(__file__).parents[1] / "fixtures" / "research_skills"
-        for plugin, (kind, script) in research_plugins.items():
-            package = (
-                "report-generation" if plugin == "deep-investment-report" else "analysis-modeling"
-            )
+        for plugin, (kind, script) in research_skills.items():
             skill = load_skill_registry(cwd).get(plugin)
             assert skill is not None and skill.metadata.status == "active"
             assert len(skill.metadata.content_hash) == 64, (
@@ -137,10 +132,10 @@ async def installed_smoke():
             assert response["status"] == "complete" and len(response["files"]) == 4
             assert response["artifacts"] == []
             exporter = importlib.import_module(
-                f"researchx.plugins.bundled.{package}.skills.{plugin}.scripts.export_report"
+                f"researchx.skills.bundled.{plugin}.scripts.export_report"
             )
             result_module = importlib.import_module(
-                f"researchx.plugins.bundled.{package}.skills.{plugin}.scripts.models"
+                f"researchx.skills.bundled.{plugin}.scripts.models"
             )
             result_type = getattr(
                 result_module,
@@ -152,11 +147,34 @@ async def installed_smoke():
                 }[kind],
             )
             from researchx.workspace.exports import export_registered
+            from researchx.state.models import SourceUsage
+
+            registered_store = ResearchStore(cwd, "a" * 12)
+            fixture_payload = json.loads(computed.read_text())
+
+            async def bind_fixture_sources(value):
+                if isinstance(value, dict):
+                    if "locator" in value and "title" in value and not value.get("source_id"):
+                        source = await registered_store.capture(
+                            origin_id=f"wheel-fixture:{value['locator']}", kind="web",
+                            locator=value["locator"], title=value["title"], content="公开离线安装测试资料",
+                            usage=SourceUsage(category="public", provider="wheel_fixture",
+                                licence_status="pending", model_use_allowed=True,
+                                internal_export_allowed=True, completeness="full"),
+                        )
+                        value["source_id"] = source.id
+                    for item in value.values():
+                        await bind_fixture_sources(item)
+                elif isinstance(value, list):
+                    for item in value:
+                        await bind_fixture_sources(item)
+
+            await bind_fixture_sources(fixture_payload)
 
             registered = await export_registered(
-                result_type.model_validate_json(computed.read_text()),
+                result_type.model_validate(fixture_payload),
                 cwd / kind,
-                ResearchStore(cwd, "a" * 12),
+                registered_store,
                 task_id="installed-script",
                 render_markdown=exporter.render_markdown,
                 sheets=exporter.SHEETS,
@@ -285,12 +303,11 @@ def test_built_wheel_includes_both_packages_and_runs_installed_smoke(tmp_path):
             "industry-deep-dive",
         ],
     }.items():
-        base = f"researchx/plugins/bundled/{package}/"
-        assert base + "plugin.json" in names
+        base = "researchx/skills/bundled/"
         for skill in skills:
-            assert base + f"skills/{skill}/SKILL.md" in names
-            assert base + f"skills/{skill}/templates/input.schema.json" in names
-            assert base + f"skills/{skill}/templates/report.md" in names
+            assert base + f"{skill}/SKILL.md" in names
+            assert base + f"{skill}/templates/input.schema.json" in names
+            assert base + f"{skill}/templates/report.md" in names
     env_dir = tmp_path / "installed"
     created = subprocess.run(
         ["uv", "venv", "--python", sys.executable, str(env_dir)],

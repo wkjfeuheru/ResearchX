@@ -2,9 +2,10 @@
 # 投研 Agent 自动化评测流程：数据集校验 -> 运行 agent + 独立裁判 -> 生成报告（可选与基线对比）。
 #
 # 关键约束：被测模型与裁判模型必须不同，否则 ExperimentRunner 拒绝启动。
-# 默认：被测 deepseek（profile web-da8cda1a018e），裁判 gemini（需先配置 GEMINI_API_KEY）。
-# 裁判选择说明：真实快照类任务的裁判报文约 20 万 token（含原文/轨迹/产物），
-# 需 1M 级上下文；qwen-plus(131072) 与 copilot(~128k) 均不足以承载，故用 gemini。
+# 默认：被测 deepseek（profile web-da8cda1a018e），裁判 qwen（qwen-plus-latest，1M 窗口）。
+# 裁判选择说明：裁判报文约 25 万 token（中文按字计），需 1M 级上下文。
+#   - qwen-plus(131072) / copilot(~128k) 放不下；
+#   - gemini 窗口够大，但免费层仅 20 次/天，无法支撑批量评测，故仅作备选。
 #
 # 用法：
 #   MODE=smoke          evals/run_research_eval.sh   # 17 条指标专项子集，低成本冒烟
@@ -22,10 +23,10 @@ OUTPUT="${OUTPUT:-$ROOT/.researchx/evaluations}"
 MODE="${MODE:-smoke}"
 REPETITIONS="${REPETITIONS:-1}"
 AGENT_PROFILE="${AGENT_PROFILE:-web-da8cda1a018e}"
-JUDGE_PROFILE="${JUDGE_PROFILE:-gemini}"
-# gemini/qwen 等 profile 未配置 context_window_tokens，且模型不在 MODEL_WINDOWS 中，
+JUDGE_PROFILE="${JUDGE_PROFILE:-qwen}"
+# 裁判 profile 未配置 context_window_tokens，且模型不在 MODEL_WINDOWS 中，
 # 裁判会在首次调用前抛 ContextBudgetError；必须显式给出窗口。
-# 真实快照类任务的裁判报文约 20 万 token，131072 不足；gemini-2.5 支持 1M，故默认 1,000,000。
+# 报文约 25 万 token，故默认 1,000,000（qwen-plus-latest 支持 1M）。
 JUDGE_CONTEXT_WINDOW_TOKENS="${JUDGE_CONTEXT_WINDOW_TOKENS:-1000000}"
 # 长任务预算覆盖：留空则用数据集的冻结预算（basic/intermediate/complex = 40/64/96 轮、
 # 3M/10M/24M token）。只在执行期生效，不改动冻结数据集，dataset_version 与归档重评分不受影响。

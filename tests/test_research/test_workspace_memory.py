@@ -52,12 +52,12 @@ async def invoke(runtime, name, **values):
     return await tool.execute(tool.input_model.model_validate(values), tool_context(runtime))
 
 
-def packet(text):
-    body = text.split("<workspace_memory>", 1)[1].split("</workspace_memory>", 1)[0]
+def packet(text, tag="workspace_memory"):
+    body = text.split(f"<{tag}>", 1)[1].split(f"</{tag}>", 1)[0]
     return json.loads(body[body.index('{"') :])
 
 
-async def test_workspace_recall_shares_memory_quota_and_defers_whole_document(workspace):
+async def test_workspace_recall_shares_memory_quota_without_reading_note(workspace):
     from researchx.config.context_components import ContextComponentsSettings
     from researchx.services.context.sources import ContextSnapshot, compose_research_context
     from researchx.services.context.token_estimation import estimate_tokens
@@ -81,8 +81,8 @@ async def test_workspace_recall_shares_memory_quota_and_defers_whole_document(wo
         if span.component == "memory"
     )
     assert amount <= 40
-    assert packet(snapshot.text)["content"] == ""
-    assert "deferred" in packet(snapshot.text)["notice"]
+    assert "complete background evidence" not in snapshot.text
+    assert "MEMORY.md" not in snapshot.text or "content" not in snapshot.text
     assert path.read_text(encoding="utf-8") == original
 
 
@@ -434,21 +434,14 @@ async def test_real_loop_refreshes_memory_without_duplicate_blocks(workspace, us
         snapshots = [
             m.runtime_context
             for m in request.messages
-            if m.runtime_context and "<workspace_memory>" in m.runtime_context
+            if m.runtime_context and "<research_memory>" in m.runtime_context
         ]
         assert len(snapshots) == 1
-        content = packet(snapshots[0])["content"]
-        assert ("最新核验发现" in content) == (index == 1)
+        assert packet(snapshots[0], "research_memory")["project_id"] == "A"
+        assert "最新核验发现" not in snapshots[0]
     # Copying refreshed messages must not alter the earlier provider request.
     assert (
-        "最新核验发现"
-        not in packet(
-            next(
-                m.runtime_context
-                for m in model.requests[0].messages
-                if m.runtime_context and "<workspace_memory>" in m.runtime_context
-            )
-        )["content"]
+        "最新核验发现" not in str(model.requests[0].messages)
     )
 
 
@@ -527,7 +520,18 @@ async def test_permissions_are_checked_against_effective_workspace_path(workspac
     assert path.read_bytes() == before
 
 
-async def test_real_bash_cwd_is_project_specific(workspace):
+async def test_real_bash_cwd_is_project_specific(workspace, monkeypatch):
+    from researchx.tools.bash_tool import BashTool
+
+    execute = BashTool.execute
+    actual_output = []
+
+    async def observe(tool, arguments, context):
+        result = await execute(tool, arguments, context)
+        actual_output.append(result.output)
+        return result
+
+    monkeypatch.setattr(BashTool, "execute", observe)
     (await workspace.repository.commit_plan(
         "A",
         PlanProposal(objective_revision=1, tasks=[task("sources")], rationale="sources"),
@@ -538,7 +542,10 @@ async def test_real_bash_cwd_is_project_specific(workspace):
     ))
     result = await _execute_tool_call(query_context(workspace), "bash", "pwd", {"command": "pwd"})
     assert not result.is_error
-    assert str((await workspace.resolve_workspace("A"))) in result.content
+    actual_workspace = await workspace.resolve_workspace("A")
+    # Observe the real process before the model-facing source-use gate.
+    assert actual_output and str(actual_workspace) in actual_output[0]
+    assert result.result_metadata["source_use_status"] == "unclassified_output_withheld"
     receipt = (await workspace.store.load()).executions[result.result_metadata["execution_id"]]
     assert receipt.status == "committed"
 
@@ -657,7 +664,7 @@ async def test_memory_replacement_clears_foreign_background_on_restore(workspace
         ]
     ))
     current = await engine.runtime_context
-    assert "SECRET_B" not in current and packet(current)["project_id"] == "A"
+    assert "SECRET_B" not in current and packet(current, "research_memory")["project_id"] == "A"
     model = MemoryEditingModel()
     engine.set_api_client(model)
     _ = [event async for event in engine.submit_message("read current memory")]

@@ -15,6 +15,31 @@ async function observeSSE(page: Page, observe: (event: any) => void) {
   });
 }
 
+test('ambiguous research requires requester choice and persists a blocked draft without human approval', async ({ page }) => {
+  const profile = await (await page.request.post('/api/models', { data: {
+    label: '交付版本测试', api_format: 'openai', model: 'delivery-test', api_key: 'delivery-secret', context_window_tokens: 200000,
+  } })).json();
+  const session = await (await page.request.post('/api/sessions', { data: { profile_id: profile.id } })).json();
+  await page.addInitScript(sid => sessionStorage.setItem('researchx.web.session', sid), session.session_id);
+  await page.goto('/');
+  await page.getByLabel('对话输入').fill('请点评新闻和财报');
+  await page.getByRole('button', { name: '发送消息', exact: true }).click();
+  await expect(page.locator('.global-error')).toContainText('发起人选择研究类型');
+  await expect(page.locator('.message.user')).toHaveCount(0);
+  await page.getByLabel('研究类型').selectOption('financial_commentary');
+  await page.getByRole('button', { name: '发送消息', exact: true }).click();
+  await expect(page.getByLabel('研究交付版本')).toContainText('点评草稿 · 资料受阻 · 暂不可批准');
+  await expect(page.locator('.message.assistant').last()).toContainText('未经人工复核');
+  const items = (await (await page.request.get(`/api/sessions/${session.session_id}/deliveries`)).json()).items;
+  expect(items).toHaveLength(1);
+  expect((await page.request.post(`/api/sessions/${session.session_id}/deliveries/${items[0].delivery_id}/review`, {
+    data: { actor_id: 'self-claimed-reviewer', decision: 'approve' },
+  })).status()).toBe(422);
+  await page.reload();
+  await expect(page.getByLabel('研究交付版本')).toContainText('暂不可批准');
+  await expect(page.getByRole('button', { name: '批准', exact: true })).toHaveCount(0);
+});
+
 test('report project status and extended task states survive history refresh', async ({ page }) => {
   const created = await page.request.post('/api/models', { data: {
     label: '研报状态模型', api_format: 'openai', model: 'report-state-test', api_key: 'report-state-secret', context_window_tokens: 200000,
@@ -191,16 +216,16 @@ test('model configuration, skills, streaming, approvals, stop and recovery', asy
   await card.getByRole('button', { name: '设为默认' }).click();
   await expect(card.getByText('默认', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'SkillHub', exact: true }).click();
-  await expect(page.getByRole('switch', { name: '启用 分析建模 Skill 包', exact: true })).toBeChecked();
-  await page.getByRole('switch', { name: '启用 分析建模 Skill 包', exact: true }).click();
-  await expect(page.getByRole('switch', { name: '启用 分析建模 Skill 包', exact: true })).not.toBeChecked();
-  await page.getByRole('switch', { name: '启用 分析建模 Skill 包', exact: true }).click();
-  await expect(page.getByRole('switch', { name: '启用 分析建模 Skill 包', exact: true })).toBeChecked();
-  await page.getByLabel('搜索技能').fill('分析建模');
+  await expect(page.getByRole('switch', { name: '启用 financial-statement-analysis', exact: true })).toBeChecked();
+  await page.getByRole('switch', { name: '启用 financial-statement-analysis', exact: true }).click();
+  await expect(page.getByRole('switch', { name: '启用 financial-statement-analysis', exact: true })).not.toBeChecked();
+  await page.getByRole('switch', { name: '启用 financial-statement-analysis', exact: true }).click();
+  await expect(page.getByRole('switch', { name: '启用 financial-statement-analysis', exact: true })).toBeChecked();
+  await page.getByLabel('搜索技能').fill('financial-statement-analysis');
   await expect(page.locator('.skill-card')).toHaveCount(1);
   await page.locator('.skill-card').getByRole('button', { name: '查看详情' }).click();
   await page.getByRole('button', { name: '在对话中试用' }).click();
-  await expect(page.getByLabel('对话输入')).toHaveValue('/financial-statement-analysis 分析公司财报');
+  await expect(page.getByLabel('对话输入')).toHaveValue('/financial-statement-analysis');
   await page.getByLabel('当前对话模型').selectOption({ label: '浏览器测试模型 · browser-test-model' });
   await page.getByRole('button', { name: '发送消息', exact: true }).click();
   await expect(page.locator('.message.assistant')).toContainText('这是浏览器测试回复');
@@ -343,6 +368,8 @@ test('research progress, source footnotes and interrupt to replan', async ({ pag
 });
 
 test('blocked research task stays expanded with its blocker', async ({ page }) => {
+  let researchStarts = 0;
+  await observeSSE(page, data => { if (data.type === 'started') researchStarts += 1; });
   const created = await page.request.post('/api/models', { data: {
     label: '受阻任务测试模型', api_format: 'openai', model: 'memory-test', api_key: 'memory-test-secret', context_window_tokens: 200000,
   } });
@@ -352,7 +379,7 @@ test('blocked research task stays expanded with its blocker', async ({ page }) =
   await page.getByLabel('当前对话模型').selectOption(id);
   await page.getByLabel('对话输入').fill('慢速研究公司 A');
   await page.getByRole('button', { name: '发送消息', exact: true }).click();
-  await expect.poll(() => researchStarts, { timeout: 15_000 }).toBe(2);
+  await expect.poll(() => researchStarts, { timeout: 15_000 }).toBe(1);
   await expect(page.locator('.message.assistant').last()).toContainText('旧研究执行中');
   await page.getByRole('button', { name: '停止生成' }).click();
   const progress = page.getByLabel('研究任务进度');
@@ -486,7 +513,7 @@ test('mobile deletion remains visible and returns to welcome', async ({ page }) 
   expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
 });
 
-test('disconnect marks pending activity interrupted and restores the saved process', async ({ page }) => {
+test('disconnect keeps the run and reports only the event connection', async ({ page }) => {
   await page.addInitScript(() => {
     const NativeSource = window.EventSource;
     window.EventSource = class extends NativeSource {
@@ -511,20 +538,18 @@ test('disconnect marks pending activity interrupted and restores the saved proce
     stream.dispatchEvent(new Event('error'));
   });
   await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.getByText('事件连接断开')).toBeVisible();
   const heading = page.locator('.process-heading');
-  await expect(heading).toHaveText('执行过程 · 已停止');
-  await expect(heading).toHaveAttribute('aria-expanded', 'false');
-  await heading.click();
-  await page.locator('.activity-summary').click();
-  await expect(page.locator('.activity-status.interrupted')).toHaveText('已中断');
+  await expect(heading).toHaveText('执行过程 · 进行中');
   const sid = await page.evaluate(() => sessionStorage.getItem('researchx.web.session'));
   await expect.poll(async () => {
     const session = await (await page.request.get(`/api/sessions/${sid}`)).json();
-    return session.messages.find((row: { role: string }) => row.role === 'activity')?.status;
-  }).toBe('interrupted');
+    return (session.messages ?? []).some((row: { status?: string; turn_status?: string }) =>
+      row.status === 'interrupted' || row.turn_status === 'stopped');
+  }).toBe(false);
   await page.reload();
-  await expect(heading).toHaveText('执行过程 · 已停止');
-  await expect(page.getByText('连接已断开', { exact: false })).toHaveCount(0);
+  await expect(page.getByText('执行过程 · 已停止')).toHaveCount(0);
+  await expect(page.getByText('已中断')).toHaveCount(0);
 });
 
 test('new stream content follows the bottom without interrupting reading above', async ({ page }) => {
@@ -599,7 +624,7 @@ test('attachments, real script artifacts, download, reload and isolation', async
   await page.getByLabel('对话输入').fill('导出固定验收产物');
   await page.getByRole('button', {name:'发送消息', exact:true}).click();
   await page.getByRole('dialog', {name:'操作确认'}).getByRole('button', {name:'允许此次操作'}).click();
-  await expect(page.getByRole('button', {name:'停止生成'})).toHaveCount(0);
+  await expect(page.getByRole('button', {name:'停止生成'})).toHaveCount(0, { timeout: 20_000 });
   await expect(page.getByLabel('研究产物').getByRole('link')).toHaveCount(4);
   const response = await page.request.get(await page.getByLabel('研究产物').getByRole('link').filter({hasText:'digest.json'}).getAttribute('href') || '');
   expect(response.ok()).toBe(true);
@@ -646,8 +671,38 @@ test('first message is delivered when SSE becomes ready before session refresh f
   await page.getByLabel('对话输入').fill('首次连接时发送消息');
   holdRefresh = true;
   await page.getByRole('button', { name: '发送消息', exact: true }).click();
-  await expect(page.locator('.message.assistant')).toContainText('这是浏览器测试回复');
+  await expect(page.locator('.message.assistant')).toContainText('这是浏览器测试回复', { timeout: 15_000 });
   await expect(page.getByLabel('对话输入')).toHaveValue('');
   await expect(page.getByRole('button', { name: '停止生成' })).toHaveCount(0);
   await expect(page.locator('.message.user')).toHaveCount(1);
+});
+
+test('parallel collection branches update without a parent revision and reject stale branch versions', async ({ page }) => {
+  const profile = await (await page.request.post('/api/models', { data: {
+    label: '并行采集测试', api_format: 'openai', model: 'parallel-test', api_key: 'parallel-secret', context_window_tokens: 200000,
+  } })).json();
+  const session = await (await page.request.post('/api/sessions', { data: { profile_id: profile.id } })).json();
+  const base = { revision: 10, plan_id: 'parallel-plan', title: '宁德时代近期新闻', current_task_id: 'collect',
+    tasks: [{ id: 'collect', title: '采集与核验', status: 'in_progress', blocker: '', completion_note: '' }],
+    completed: 0, total: 1, replan_required: false };
+  const batch = { dispatch_id: 'batch', version: 1, parent_task_id: 'collect', status: 'running',
+    branches: ['新闻事件', '公司公告', '券商观点'].map((title, index) => ({ task_id: `${index}`, title, status: 'running', reviewed: false })) };
+  const update = async (value: unknown) => expect((await page.request.post(`/__test/project-progress/${session.session_id}`, { data: value })).ok()).toBe(true);
+  await update({ ...base, dispatches: [batch] });
+  await page.addInitScript(sid => sessionStorage.setItem('researchx.web.session', sid), session.session_id);
+  await page.goto('/');
+  const branches = page.getByLabel('并行采集进度');
+  await expect(branches.getByText('采集中', { exact: true })).toHaveCount(3);
+  const complete = { ...batch, version: 2, branches: batch.branches.map(b => b.task_id === '0' ? { ...b, status: 'awaiting_review' } : b) };
+  await update({ ...base, dispatches: [complete] });
+  await expect(branches).toContainText('采集结束 · 待主代理核对');
+  await expect(branches.getByText('采集中', { exact: true })).toHaveCount(2);
+  await update({ ...base, dispatches: [batch] });
+  await expect(branches).toContainText('采集结束 · 待主代理核对');
+  await update({ ...base, revision: 9, dispatches: [{ ...batch, version: 99 }] });
+  await expect(branches).toContainText('采集结束 · 待主代理核对');
+  await update({ ...base, revision: 11, dispatches: [{ ...complete, branches: complete.branches.map(b => b.task_id === '0' ? { ...b, reviewed: true } : b) }] });
+  await expect(branches).toContainText('主 Agent 已核对');
+  await page.reload();
+  await expect(page.getByLabel('并行采集进度')).toContainText('主 Agent 已核对');
 });

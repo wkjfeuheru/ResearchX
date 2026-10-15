@@ -1,5 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
-import { errorText, type Message, type Prompt, type Session } from './api';
+import { errorText, type Message, type Prompt, type Session, type ResearchProgress } from './api';
+
+export function mergeResearchProgress(current: ResearchProgress | null | undefined, next: ResearchProgress): ResearchProgress {
+  if (!current) return next;
+  if (next.revision < current.revision) return current;
+  if (current.plan_id !== next.plan_id) return next.revision >= current.revision ? next : current;
+  const batches = new Map((current.dispatches || []).map(batch => [batch.dispatch_id, batch]));
+  for (const batch of next.dispatches || []) {
+    const previous = batches.get(batch.dispatch_id);
+    if (!previous || batch.version > previous.version || (batch.version === previous.version && next.revision >= current.revision)) {
+      batches.set(batch.dispatch_id, batch);
+    }
+  }
+  return { ...(next.revision >= current.revision ? next : current), dispatches: [...batches.values()] };
+}
 
 export function useConversation(sessionId: string | null, onDone: () => void, onStarted: () => void,
   onFailed: (text: string) => void, onDeleted: () => void) {
@@ -16,7 +30,7 @@ export function useConversation(sessionId: string | null, onDone: () => void, on
   const readySessionId = useRef<string | null>(null);
   const activeId = useRef('');
   const draftId = useRef<string | null>(null);
-  const pending = useRef<{ sessionId: string; text: string; profileId: string; attachmentIds: string[] } | null>(null);
+  const pending = useRef<{ sessionId: string; text: string; profileId: string; attachmentIds: string[]; researchType: string } | null>(null);
   const lastText = useRef('');
   const steering = useRef<{ id: string; text: string } | null>(null);
   const callbacks = useRef({ onDone, onStarted, onFailed, onDeleted });
@@ -42,13 +56,13 @@ export function useConversation(sessionId: string | null, onDone: () => void, on
     }
   }
 
-  function dispatch(source: EventSource, id: string, text: string, profileId: string, attachmentIds: string[] = []) {
+  function dispatch(source: EventSource, id: string, text: string, profileId: string, attachmentIds: string[] = [], researchType = '') {
     activeId.current = crypto.randomUUID();
     lastText.current = text;
     draftId.current = null;
     setBusy(true); setError(''); setStatus('正在准备…');
     const requestId = activeId.current;
-    void sendCommand(source, id, { type: 'submit', request_id: requestId, text, profile_id: profileId, attachment_ids: attachmentIds }).then(ok => {
+    void sendCommand(source, id, { type: 'submit', request_id: requestId, text, profile_id: profileId, attachment_ids: attachmentIds, research_type: researchType || null }).then(ok => {
       if (!ok && stream.current === source && activeId.current === requestId) {
         setBusy(false); setStatus(''); callbacks.current.onFailed(text);
       }
@@ -70,10 +84,11 @@ export function useConversation(sessionId: string | null, onDone: () => void, on
       if (data.type === 'ready') {
         connectionId.current = data.connection_id;
         readySessionId.current = sessionId;
-        setSession(data.session); setConnected(true); setBusy(false);
+        activeId.current = data.running ? data.request_id : '';
+        setSession(data.session); setConnected(true); setBusy(Boolean(data.running));
         if (pending.current?.sessionId === sessionId) {
           const queued = pending.current; pending.current = null;
-          dispatch(source, sessionId, queued.text, queued.profileId, queued.attachmentIds);
+          dispatch(source, sessionId, queued.text, queued.profileId, queued.attachmentIds, queued.researchType);
         }
         return;
       }
@@ -117,8 +132,7 @@ export function useConversation(sessionId: string | null, onDone: () => void, on
         case 'usage':
           setSession(current => current ? { ...current, usage: data.usage } : current); break;
         case 'research_progress':
-          setSession(current => current && (!current.research_progress || data.progress.revision > current.research_progress.revision)
-            ? { ...current, research_progress: data.progress } : current); break;
+          setSession(current => current ? { ...current, research_progress: mergeResearchProgress(current.research_progress, data.progress) } : current); break;
         case 'system': append({ id: crypto.randomUUID(), role: 'system', text: data.text }); break;
         case 'status': setStatus(data.message); break;
         case 'prompt': setPrompts(current => current.some(item => item.prompt_id === data.prompt_id) ? current : [...current, data]); break;
@@ -142,10 +156,7 @@ export function useConversation(sessionId: string | null, onDone: () => void, on
       if (!disposed) {
         readySessionId.current = null; connectionId.current = ''; stream.current = null;
         setConnected(false); setBusy(false); setPrompts([]); pending.current = null; steering.current = null;
-        setSession(current => current ? { ...current, messages: current.messages.map(row => row.turn_status === 'running'
-          ? { ...row, turn_status: 'stopped', phase: row.phase === 'pending' ? 'progress' : row.phase,
-            status: row.status === 'running' ? 'interrupted' : row.status } : row) } : current);
-        setError('连接已断开。重新打开会话可恢复历史；消息不会自动重发。');
+        setError('事件连接断开');
       }
     };
     return () => { disposed = true; source.close(); if (stream.current === source) stream.current = null; readySessionId.current = null; connectionId.current = ''; };
@@ -154,20 +165,20 @@ export function useConversation(sessionId: string | null, onDone: () => void, on
   return {
     session, setSession, busy, connected, error, setError, status: prompt ? (prompt.kind === 'question' ? '等待你的回复' : '等待操作确认') : status, prompt,
     reconnect() { setEpoch(value => value + 1); },
-    send(id: string, text: string, profileId: string, attachmentIds: string[] = []) {
+    send(id: string, text: string, profileId: string, attachmentIds: string[] = [], researchType = '') {
       setBusy(true);
       // ensureSession can await a catalog refresh while this stream already receives
       // ready. Its caller then resumes with an older render's sessionId/connected.
-      if (readySessionId.current === id && stream.current?.readyState === EventSource.OPEN) dispatch(stream.current, id, text, profileId, attachmentIds);
-      else pending.current = { sessionId: id, text, profileId, attachmentIds };
+      if (readySessionId.current === id && stream.current?.readyState === EventSource.OPEN) dispatch(stream.current, id, text, profileId, attachmentIds, researchType);
+      else pending.current = { sessionId: id, text, profileId, attachmentIds, researchType };
     },
     cancel() { if (stream.current && readySessionId.current) void sendCommand(stream.current, readySessionId.current, { type: 'cancel', request_id: activeId.current }); },
-    steer(text: string) {
+    steer(text: string, researchType = '') {
       if (!text.trim() || !busy || !connected || steering.current || stream.current?.readyState !== EventSource.OPEN || !readySessionId.current) return;
       const id = crypto.randomUUID();
       steering.current = { id, text: text.trim() };
       const source = stream.current;
-      void sendCommand(source, readySessionId.current, { type: 'steer', request_id: id, target_request_id: activeId.current, text: text.trim() }).then(ok => {
+      void sendCommand(source, readySessionId.current, { type: 'steer', request_id: id, target_request_id: activeId.current, text: text.trim(), research_type: researchType || null }).then(ok => {
         if (!ok && stream.current === source && steering.current?.id === id) { steering.current = null; setStatus(''); }
       });
       setStatus('正在提交修改要求…');

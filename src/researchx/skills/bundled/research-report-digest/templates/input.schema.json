@@ -1,0 +1,758 @@
+{
+  "$defs": {
+    "Amount": {
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Value"
+        },
+        "unit": {
+          "anyOf": [
+            {
+              "enum": [
+                "元",
+                "万元",
+                "亿元",
+                "千元",
+                "百万元",
+                "十亿元"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unit"
+        },
+        "references": {
+          "items": {
+            "$ref": "#/$defs/Reference"
+          },
+          "title": "References",
+          "type": "array"
+        },
+        "missing_reason": {
+          "default": "",
+          "title": "Missing Reason",
+          "type": "string"
+        },
+        "fact_basis": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FactBasis"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "value"
+      ],
+      "title": "Amount",
+      "type": "object"
+    },
+    "BrokerReport": {
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "institution": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Institution"
+        },
+        "authors": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Authors",
+          "type": "array"
+        },
+        "published_at": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Published At"
+        },
+        "references": {
+          "items": {
+            "$ref": "#/$defs/Reference"
+          },
+          "minItems": 1,
+          "title": "References",
+          "type": "array"
+        },
+        "summary_only": {
+          "default": false,
+          "title": "Summary Only",
+          "type": "boolean"
+        },
+        "views": {
+          "items": {
+            "$ref": "#/$defs/Claim"
+          },
+          "title": "Views",
+          "type": "array"
+        },
+        "arguments": {
+          "items": {
+            "$ref": "#/$defs/Claim"
+          },
+          "title": "Arguments",
+          "type": "array"
+        },
+        "assumptions": {
+          "items": {
+            "$ref": "#/$defs/Claim"
+          },
+          "title": "Assumptions",
+          "type": "array"
+        },
+        "predictions": {
+          "items": {
+            "$ref": "#/$defs/Prediction"
+          },
+          "title": "Predictions",
+          "type": "array"
+        },
+        "target_price": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Amount"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "target_currency": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Currency"
+        },
+        "rating": {
+          "$ref": "#/$defs/Rating"
+        },
+        "rating_change": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rating Change"
+        },
+        "risks": {
+          "items": {
+            "$ref": "#/$defs/Claim"
+          },
+          "title": "Risks",
+          "type": "array"
+        },
+        "gaps": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Gaps",
+          "type": "array"
+        }
+      },
+      "required": [
+        "title",
+        "institution",
+        "published_at",
+        "references"
+      ],
+      "title": "BrokerReport",
+      "type": "object"
+    },
+    "Claim": {
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "kind": {
+          "default": "unclassified",
+          "enum": [
+            "fact",
+            "inference",
+            "forecast",
+            "unclassified"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "references": {
+          "items": {
+            "$ref": "#/$defs/Reference"
+          },
+          "minItems": 1,
+          "title": "References",
+          "type": "array"
+        },
+        "observation_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Observation Ids",
+          "type": "array"
+        },
+        "conclusion_id": {
+          "default": "",
+          "title": "Conclusion Id",
+          "type": "string"
+        },
+        "reasoning_summary": {
+          "default": "",
+          "title": "Reasoning Summary",
+          "type": "string"
+        },
+        "model_run_id": {
+          "default": "",
+          "title": "Model Run Id",
+          "type": "string"
+        },
+        "output_id": {
+          "default": "",
+          "title": "Output Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "references"
+      ],
+      "title": "Claim",
+      "type": "object"
+    },
+    "Company": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "code": {
+          "pattern": "^\\d{6}$",
+          "title": "Code",
+          "type": "string"
+        },
+        "market": {
+          "enum": [
+            "SSE",
+            "SZSE",
+            "BSE"
+          ],
+          "title": "Market",
+          "type": "string"
+        },
+        "industry": {
+          "minLength": 1,
+          "title": "Industry",
+          "type": "string"
+        },
+        "financial_sector": {
+          "default": false,
+          "title": "Financial Sector",
+          "type": "boolean"
+        },
+        "identity_sources": {
+          "items": {
+            "$ref": "#/$defs/Reference"
+          },
+          "minItems": 1,
+          "title": "Identity Sources",
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "code",
+        "market",
+        "industry",
+        "identity_sources"
+      ],
+      "title": "Company",
+      "type": "object"
+    },
+    "FactBasis": {
+      "additionalProperties": false,
+      "description": "Explicit dimensions of a disclosed or calculated financial observation.",
+      "properties": {
+        "security_code": {
+          "pattern": "^\\d{6}$",
+          "title": "Security Code",
+          "type": "string"
+        },
+        "market": {
+          "enum": [
+            "SSE",
+            "SZSE",
+            "BSE"
+          ],
+          "title": "Market",
+          "type": "string"
+        },
+        "period_start": {
+          "format": "date",
+          "title": "Period Start",
+          "type": "string"
+        },
+        "period_end": {
+          "format": "date",
+          "title": "Period End",
+          "type": "string"
+        },
+        "period_type": {
+          "enum": [
+            "annual",
+            "year_to_date",
+            "single_quarter",
+            "point_in_time"
+          ],
+          "title": "Period Type",
+          "type": "string"
+        },
+        "scope": {
+          "enum": [
+            "consolidated",
+            "parent"
+          ],
+          "title": "Scope",
+          "type": "string"
+        },
+        "currency": {
+          "maxLength": 3,
+          "minLength": 3,
+          "title": "Currency",
+          "type": "string"
+        },
+        "unit": {
+          "anyOf": [
+            {
+              "enum": [
+                "元",
+                "万元",
+                "亿元",
+                "千元",
+                "百万元",
+                "十亿元"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unit"
+        },
+        "adjustment": {
+          "enum": [
+            "as_reported",
+            "restated"
+          ],
+          "title": "Adjustment",
+          "type": "string"
+        },
+        "value_kind": {
+          "enum": [
+            "actual",
+            "forecast"
+          ],
+          "title": "Value Kind",
+          "type": "string"
+        },
+        "as_of": {
+          "format": "date-time",
+          "title": "As Of",
+          "type": "string"
+        },
+        "published_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Published At"
+        },
+        "observation_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Observation At"
+        },
+        "benchmark_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Benchmark Code"
+        },
+        "benchmark_as_of": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Benchmark As Of"
+        },
+        "calculation_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Calculation Version"
+        },
+        "formula": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Formula"
+        },
+        "input_evidence_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Input Evidence Ids",
+          "type": "array"
+        },
+        "metric_id": {
+          "default": "",
+          "title": "Metric Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "security_code",
+        "market",
+        "period_start",
+        "period_end",
+        "period_type",
+        "scope",
+        "currency",
+        "adjustment",
+        "value_kind",
+        "as_of"
+      ],
+      "title": "FactBasis",
+      "type": "object"
+    },
+    "Prediction": {
+      "additionalProperties": false,
+      "properties": {
+        "year": {
+          "maximum": 2100,
+          "minimum": 2000,
+          "title": "Year",
+          "type": "integer"
+        },
+        "metric": {
+          "title": "Metric",
+          "type": "string"
+        },
+        "amount": {
+          "$ref": "#/$defs/Amount"
+        },
+        "currency": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Currency"
+        },
+        "basis": {
+          "minLength": 1,
+          "title": "Basis",
+          "type": "string"
+        }
+      },
+      "required": [
+        "year",
+        "metric",
+        "amount",
+        "basis"
+      ],
+      "title": "Prediction",
+      "type": "object"
+    },
+    "Rating": {
+      "additionalProperties": false,
+      "properties": {
+        "current": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Current"
+        },
+        "previous": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Previous"
+        },
+        "change_explicit": {
+          "default": false,
+          "title": "Change Explicit",
+          "type": "boolean"
+        },
+        "references": {
+          "items": {
+            "$ref": "#/$defs/Reference"
+          },
+          "title": "References",
+          "type": "array"
+        }
+      },
+      "title": "Rating",
+      "type": "object"
+    },
+    "Reference": {
+      "additionalProperties": false,
+      "properties": {
+        "locator": {
+          "minLength": 1,
+          "title": "Locator",
+          "type": "string"
+        },
+        "title": {
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "source_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Id"
+        },
+        "evidence_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Id"
+        },
+        "page": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Page"
+        },
+        "published_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Published At"
+        },
+        "excerpt": {
+          "default": "",
+          "title": "Excerpt",
+          "type": "string"
+        }
+      },
+      "required": [
+        "locator",
+        "title"
+      ],
+      "title": "Reference",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "default": 1,
+      "enum": [
+        1,
+        2,
+        3
+      ],
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "company": {
+      "$ref": "#/$defs/Company"
+    },
+    "inputs": {
+      "items": {
+        "$ref": "#/$defs/Reference"
+      },
+      "minItems": 1,
+      "title": "Inputs",
+      "type": "array"
+    },
+    "status": {
+      "default": "partial",
+      "enum": [
+        "complete",
+        "partial",
+        "blocked"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "gaps": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Gaps",
+      "type": "array"
+    },
+    "as_of": {
+      "format": "date-time",
+      "title": "As Of",
+      "type": "string"
+    },
+    "kind": {
+      "const": "digest",
+      "default": "digest",
+      "title": "Kind",
+      "type": "string"
+    },
+    "reports": {
+      "items": {
+        "$ref": "#/$defs/BrokerReport"
+      },
+      "minItems": 1,
+      "title": "Reports",
+      "type": "array"
+    },
+    "comparison": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Comparison",
+      "type": "array"
+    }
+  },
+  "required": [
+    "company",
+    "inputs",
+    "as_of",
+    "reports"
+  ],
+  "title": "DigestResult",
+  "type": "object"
+}

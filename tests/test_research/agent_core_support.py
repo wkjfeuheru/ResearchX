@@ -55,9 +55,9 @@ def workspace_packet(request):
     text = next(
         message.runtime_context
         for message in reversed(request.messages)
-        if message.runtime_context and "<workspace_memory>" in message.runtime_context
+        if message.runtime_context and "<research_memory>" in message.runtime_context
     )
-    body = text.split("<workspace_memory>", 1)[1].split("</workspace_memory>", 1)[0]
+    body = text.split("<research_memory>", 1)[1].split("</research_memory>", 1)[0]
     return json.loads(body[body.index('{"') :])
 
 
@@ -84,7 +84,7 @@ class OfflineFetch(BaseTool):
                     {
                         "kind": "web",
                         "content": DOCS[key],
-                        "locator": arguments.url,
+                        "locator": "https://www.sse.com.cn/test-fixtures/" + key,
                         "title": f"AlphaTech {key} 合成披露",
                         "fragment": False,
                     }

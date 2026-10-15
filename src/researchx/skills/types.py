@@ -45,8 +45,16 @@ class SkillDefinition:
     argument_hint: str | None = None
     metadata: SkillMetadata = field(default_factory=SkillMetadata)
     enabled: bool = True
-    plugin_name: str | None = None
     approved_root: str | None = None
+
+    @property
+    def id(self) -> str:
+        from hashlib import sha256
+
+        location = (
+            self.command_name or self.name if self.source == "builtin" else self.path or self.name
+        )
+        return self.source + "_" + sha256(location.encode()).hexdigest()[:24]
 
     def load_content(self) -> str:
         """Read only this entrypoint, never its supporting resources."""

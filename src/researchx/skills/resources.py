@@ -84,7 +84,6 @@ def selected_skill_resource(context: ToolExecutionContext, candidate: Path) -> P
             context.cwd,
             settings=context.metadata.get("skill_settings") or context.settings,
             extra_skill_dirs=context.metadata.get("extra_skill_dirs"),
-            extra_plugin_roots=context.metadata.get("extra_plugin_roots"),
         )
         skill = registry.get(name)
         if not skill or skill.base_dir != base or skill.metadata.status in {"draft", "retired"}:

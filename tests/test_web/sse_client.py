@@ -67,8 +67,9 @@ class SSEClient:
         while True:
             if "\n\n" in self.buffer:
                 frame, self.buffer = self.buffer.split("\n\n", 1)
-                if frame.startswith("data: "):
-                    event = json.loads(frame[6:])
+                data = next((line[6:] for line in frame.split("\n") if line.startswith("data: ")), None)
+                if data is not None:
+                    event = json.loads(data)
                     if event["type"] == "ready":
                         self.connection_id = event["connection_id"]
                     return event

@@ -12,7 +12,9 @@ from starlette.types import Scope, Receive, Send
 
 
 def encode_event(event: dict[str, object]) -> str:
-    return "data: " + json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n\n"
+    event_id = event.get("event_id")
+    prefix = f"id: {event_id}\n" if isinstance(event_id, int) and event_id >= 0 else ""
+    return prefix + "data: " + json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n\n"
 
 
 class SessionEventResponse(StreamingResponse):
@@ -55,21 +57,25 @@ class EventChannel:
         async with self.lock:
             if self.detached.is_set():
                 return
-            put = asyncio.create_task(self.queue.put(value))
-            closed = asyncio.create_task(self.detached.wait())
             try:
-                await asyncio.wait((put, closed), return_when=asyncio.FIRST_COMPLETED)
-            finally:
-                for task in (put, closed):
-                    if not task.done():
-                        task.cancel()
-                await asyncio.gather(put, closed, return_exceptions=True)
+                self.queue.put_nowait(value)
+            except asyncio.QueueFull:
+                # A slow browser loses its subscription. The run keeps executing.
+                self.detach()
 
     def detach(self) -> None:
         self.detached.set()
 
     async def stream(self) -> AsyncIterator[str]:
-        while not self.detached.is_set():
+        while True:
+            if self.detached.is_set():
+                while True:
+                    try:
+                        item = self.queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        return
+                    if item is not None:
+                        yield item
             try:
                 item = await asyncio.wait_for(self.queue.get(), self.heartbeat_seconds)
             except asyncio.TimeoutError:

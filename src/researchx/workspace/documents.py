@@ -143,7 +143,7 @@ def main(argv: list[str] | None = None) -> None:
     import json
     from researchx.storage.filesystem import atomic_write_text
     from researchx.security.network_guard import fetch_public_http_response
-    from researchx.plugins.research_script_support import guarded
+    from researchx.skills.runtime_support import guarded
 
     parser = argparse.ArgumentParser(description=main.__doc__)
     parser.add_argument("--input", required=True, help="Local PDF/TXT/MD or public HTTP(S) URL")

@@ -93,7 +93,7 @@ class BrowserModel:
         if last.text.startswith("导出固定验收产物"):
             scripts = (
                 Path(__file__).resolve().parents[2]
-                / "src/researchx/plugins/bundled/analysis-modeling/skills/research-report-digest/scripts"
+                / "src/researchx/skills/bundled/research-report-digest/scripts"
             )
             python = shlex.quote(
                 str(Path(sys.executable).parent.resolve() / Path(sys.executable).name)
@@ -157,6 +157,8 @@ class BrowserModel:
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="researchx-browser-") as directory:
         root = Path(directory)
+        # Isolate fake-model credentials from the desktop keyring and D-Bus prompts.
+        os.environ["PYTHON_KEYRING_BACKEND"] = "keyring.backends.fail.Keyring"
         os.environ["RESEARCHX_CONFIG_DIR"] = str(root / "config")
         os.environ["RESEARCHX_DATA_DIR"] = str(root / "data")
         for name in (
@@ -171,6 +173,7 @@ if __name__ == "__main__":
         save_settings(Settings(context_window_tokens=200_000))
         (root / "workspace").mkdir()
         WORKSPACE = root / "workspace"
+        Path.home = classmethod(lambda cls: WORKSPACE / "home")
         shutil.copytree(
             Path(__file__).parents[1] / "fixtures/research_skills", WORKSPACE / "fixtures"
         )
@@ -181,6 +184,25 @@ if __name__ == "__main__":
         # Deterministic projection for UI states that cannot all be reached at
         # once in a real run. Delivery still goes through the real SSE route.
         from researchx.state.store import ResearchStore
+        from researchx.state.models import SourceUsage
+        import researchx.web.runtime as browser_runtime
+
+        original_build_runtime = browser_runtime.build_runtime
+
+        async def build_fixture_runtime(**kwargs):
+            bundle = await original_build_runtime(**kwargs)
+            store = bundle.engine.tool_metadata["research_store"]
+            path = WORKSPACE / "report.txt"
+            await store.capture(
+                origin_id="public-browser-fixture", kind="file", content=path.read_text(),
+                locator=str(path), title="公开测试资料",
+                usage=SourceUsage(category="public", licence_status="pending",
+                                  model_use_allowed=True, internal_export_allowed=True,
+                                  completeness="full"),
+            )
+            return bundle
+
+        browser_runtime.build_runtime = build_fixture_runtime
 
         progress_fixtures = {}
         original_progress = ResearchStore.progress
@@ -194,6 +216,9 @@ if __name__ == "__main__":
         async def project_progress(session_id: str, progress: dict):
             await app.state.workspace.record(session_id)
             progress_fixtures[session_id] = progress
+            connection = app.state.workspace.connections.get(session_id)
+            if connection:
+                await connection.emit("research_progress", progress=progress)
             return {"ok": True}
 
         @app.post("/__test/stream-delta/{session_id}")

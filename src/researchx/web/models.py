@@ -43,11 +43,37 @@ class SessionInput(BaseModel):
 class CommandRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    type: Literal["submit", "cancel", "response", "steer"]
+    type: Literal["submit", "cancel", "response", "steer", "resume"]
     request_id: str = Field(min_length=1, max_length=100)
     target_request_id: str | None = Field(default=None, max_length=100)
     text: str = Field(default="", max_length=100_000)
     profile_id: str | None = Field(default=None, max_length=100)
+    research_type: Literal[
+        "event_commentary",
+        "financial_commentary",
+        "financial-statement-analysis",
+        "financial-commentary",
+        "company-event-monitor",
+        "research-report-digest",
+        "earnings-forecast",
+        "industry-commentary",
+        "industry-deep-dive",
+        "deep-investment-report",
+        "generic-research",
+    ] | None = None
     attachment_ids: list[str] = Field(default_factory=list, max_length=10)
     prompt_id: str | None = Field(default=None, max_length=100)
     answer: str = Field(default="", max_length=100_000)
+    run_id: str | None = Field(default=None, max_length=100)
+    epoch: int | None = Field(default=None, ge=0)
+
+
+class ReviewRequest(BaseModel):
+    """Browser review payload. Actor identity is attached by the local adapter."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["approve", "changes_requested"]
+    expected_manifest_hash: str = Field(min_length=64, max_length=64)
+    note: str = Field(min_length=1, max_length=4000)
+    reviewed_claim_ids: list[str] = Field(default_factory=list, max_length=200)

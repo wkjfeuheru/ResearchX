@@ -18,14 +18,12 @@ def _build_skills_section(
     cwd: str | Path,
     *,
     extra_skill_dirs: Iterable[str | Path] | None = None,
-    extra_plugin_roots: Iterable[str | Path] | None = None,
     settings: Settings | None = None,
 ) -> str | None:
     """Build a system prompt section listing available skills."""
     registry = load_skill_registry(
         cwd,
         extra_skill_dirs=extra_skill_dirs,
-        extra_plugin_roots=extra_plugin_roots,
         settings=settings,
     )
     skills = [
@@ -87,7 +85,6 @@ def build_runtime_prompt(
     cwd: str | Path,
     latest_user_prompt: str | None = None,
     extra_skill_dirs: Iterable[str | Path] | None = None,
-    extra_plugin_roots: Iterable[str | Path] | None = None,
 ) -> RuntimePrompt:
     """Keep instruction/catalog prefixes stable and snapshot per-turn reference state."""
     sections = [settings.system_prompt or get_base_system_prompt()]
@@ -112,13 +109,12 @@ def build_runtime_prompt(
     skills_section = _build_skills_section(
         cwd,
         extra_skill_dirs=extra_skill_dirs,
-        extra_plugin_roots=extra_plugin_roots,
         settings=settings,
     )
     if skills_section:
         sections.append(skills_section)
 
-    if settings.research_memory.enabled:
+    if settings.research.context.auto_inject:
         from researchx.state.prompt import RESEARCH_MEMORY_PROMPT
 
         sections.append(RESEARCH_MEMORY_PROMPT)
@@ -143,7 +139,6 @@ class PromptOptions(TypedDict, total=False):
     cwd: str
     latest_user_prompt: str | None
     extra_skill_dirs: Iterable[str | Path] | None
-    extra_plugin_roots: Iterable[str | Path] | None
 
 
 def build_runtime_system_prompt(settings: Settings, **kwargs: Unpack[PromptOptions]) -> str:

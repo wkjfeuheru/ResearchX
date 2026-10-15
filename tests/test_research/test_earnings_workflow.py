@@ -343,7 +343,26 @@ class EarningsModel:
         )
 
 
-async def test_earnings_report_end_to_end_and_restart(tmp_path):
+async def test_earnings_report_end_to_end_and_restart(tmp_path, monkeypatch):
+    from researchx.state import source_policy
+    from researchx.state.models import SourceUsage
+    import researchx.services.execution.tool_execution as execution_boundary
+    import researchx.state.repository as repository_boundary
+
+    original_usage = source_policy.collected_usage
+
+    def fixture_usage(tool_name, spec):
+        if tool_name == "financial_fixture":
+            return SourceUsage(category="public", provider="synthetic_fixture",
+                               licence_status="pending", model_use_allowed=True,
+                               internal_export_allowed=True, completeness="full")
+        return original_usage(tool_name, spec)
+
+    # The offline fixture emulates a trusted, licensed collection adapter;
+    # source-policy tests separately assert that arbitrary tools cannot self-grant.
+    monkeypatch.setattr(source_policy, "collected_usage", fixture_usage)
+    monkeypatch.setattr(execution_boundary, "collected_usage", fixture_usage)
+    monkeypatch.setattr(repository_boundary, "collected_usage", fixture_usage)
     store = ResearchStore(tmp_path, "d" * 12, root=tmp_path / "memory")
     registry = create_research_tool_registry()
     registry.register(FinancialFixtureTool())

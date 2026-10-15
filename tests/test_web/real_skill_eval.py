@@ -43,7 +43,7 @@ RESULT_TYPES = {}
 FUNCTIONS = {}
 for kind, (plugin, script, function, result_type) in SKILL_FUNCTIONS.items():
     package = "report-generation" if kind == "deep" else "analysis-modeling"
-    module = import_module(f"researchx.plugins.bundled.{package}.skills.{plugin}.scripts.{script}")
+    module = import_module(f"researchx.skills.bundled.{plugin}.scripts.{script}")
     RESULT_TYPES[kind] = getattr(module, result_type)
     FUNCTIONS[kind] = getattr(module, function)
 

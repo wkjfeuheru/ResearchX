@@ -58,8 +58,30 @@ class PermissionSettings(BaseModel):
     denied_commands: list[str] = Field(default_factory=list)
 
 
+class ResearchRuntimeSettings(BaseModel):
+    """Single-process quotas. A second worker must not start its own queue."""
+
+    max_concurrent_runs: int = Field(default=2, ge=1, le=8)
+    max_concurrent_model_requests: int = Field(default=4, ge=1, le=32)
+    max_concurrent_tools: int = Field(default=8, ge=1, le=64)
+    max_concurrent_http_requests: int = Field(default=8, ge=1, le=64)
+    queue_capacity: int = Field(default=64, ge=1, le=64)
+    restart_policy: Literal["pause"] = "pause"
+
+
+class ResearchContextSettings(BaseModel):
+    """Automatic prompt injection. Evidence, plans and subagents stay available."""
+
+    auto_inject: bool = True
+
+
+class ResearchSettings(BaseModel):
+    runtime: ResearchRuntimeSettings = Field(default_factory=ResearchRuntimeSettings)
+    context: ResearchContextSettings = Field(default_factory=ResearchContextSettings)
+
+
 class ResearchMemorySettings(BaseModel):
-    """Independent per-conversation research memory policy."""
+    """Research recall policy; persistence and execution checks remain active."""
 
     enabled: bool = True
     injection_budget_tokens: int = Field(default=6000, ge=256)
@@ -67,6 +89,10 @@ class ResearchMemorySettings(BaseModel):
     conflict_timeout_seconds: float = Field(default=180, gt=0, le=3600)
     workspace_root: str | None = None
     memory_auto_inject_max_chars: int = Field(default=12000, ge=256, le=200000)
+    auto_summary_max_tokens: int = Field(default=1500, ge=1, le=10000)
+    auto_index_max_items: int = Field(default=12, ge=0, le=100)
+    query_default_limit: int = Field(default=20, ge=1, le=100)
+    query_max_limit: int = Field(default=100, ge=1, le=100)
     subagent_max_concurrency: int = Field(default=3, ge=1, le=8)
     subagent_max_calls: int = Field(default=12, ge=1, le=100)
     subagent_timeout_seconds: float = Field(default=180, gt=0, le=3600)
@@ -637,12 +663,11 @@ class Settings(BaseModel):
     permission: PermissionSettings = Field(default_factory=PermissionSettings)
     hooks: dict[str, list[HookDefinition]] = Field(default_factory=dict)
     research_memory: ResearchMemorySettings = Field(default_factory=ResearchMemorySettings)
+    research: ResearchSettings = Field(default_factory=ResearchSettings)
     context_components: ContextComponentsSettings = Field(default_factory=ContextComponentsSettings)
     sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
     web: WebSettings = Field(default_factory=WebSettings)
-    enabled_plugins: dict[str, bool] = Field(default_factory=dict)
     enabled_skills: dict[str, bool] = Field(default_factory=dict)
-    allow_project_plugins: bool = False
     allow_project_skills: bool = True
     project_skill_dirs: list[str] = Field(
         default_factory=lambda: [".researchx/skills", ".agents/skills", ".claude/skills"]
@@ -667,6 +692,26 @@ class Settings(BaseModel):
         if not isinstance(values, dict):
             return values
         values = dict(values)
+
+        def mapping(value: object) -> dict[str, object]:
+            if isinstance(value, dict):
+                return dict(value)
+            if isinstance(value, BaseModel):
+                return value.model_dump()
+            return {}
+
+        memory = mapping(values.get("research_memory"))
+        research = mapping(values.get("research"))
+        context = mapping(research.get("context"))
+        if "enabled" in memory:
+            context["auto_inject"] = memory["enabled"]
+        elif "auto_inject" in context:
+            memory["enabled"] = context["auto_inject"]
+        if context:
+            research["context"] = context
+            values["research"] = research
+        if memory:
+            values["research_memory"] = memory
         legacy = values.get("memory")
         if not isinstance(legacy, dict):
             return values
@@ -1153,6 +1198,9 @@ def load_settings(config_path: Path | None = None) -> Settings:
         config_path = get_config_file_path()
 
     if config_path.exists():
+        from researchx.skills.migration import migrate_legacy_settings
+
+        migrate_legacy_settings(config_path)
         private_file(config_path)
         raw = json.loads(config_path.read_text(encoding="utf-8"))
         settings = Settings.model_validate(raw)

@@ -82,7 +82,8 @@ async def test_transport_child_failure_does_not_cancel_research_or_other_server(
         await asyncio.sleep(0)
         assert manager._statuses["bad"].state == "failed"
     finally:
-        await manager.close()
+        with pytest.raises(RuntimeError, match="MCP cleanup failed"):
+            await manager.close()
     assert not manager._owners and not manager._stacks
 
 
@@ -234,7 +235,7 @@ async def test_register_connected_session_tolerates_missing_resources_list():
 
 
 @pytest.mark.asyncio
-async def test_close_suppresses_known_runtime_error_from_stdio_cleanup():
+async def test_close_reports_runtime_error_from_stdio_cleanup():
     manager = McpClientManager({})
     stack = MagicMock()
     stack.aclose = AsyncMock(
@@ -245,21 +246,23 @@ async def test_close_suppresses_known_runtime_error_from_stdio_cleanup():
     manager._stacks["context7"] = stack
     manager._sessions["context7"] = AsyncMock()
 
-    await manager.close()
+    with pytest.raises(RuntimeError, match="MCP cleanup failed"):
+        await manager.close()
 
     assert manager._stacks == {}
     assert manager._sessions == {}
 
 
 @pytest.mark.asyncio
-async def test_close_suppresses_cancelled_error_from_stdio_cleanup():
+async def test_close_reports_cancelled_cleanup_from_stdio_cleanup():
     manager = McpClientManager({})
     stack = MagicMock()
     stack.aclose = AsyncMock(side_effect=asyncio.CancelledError())
     manager._stacks["context7"] = stack
     manager._sessions["context7"] = AsyncMock()
 
-    await manager.close()
+    with pytest.raises(RuntimeError, match="MCP cleanup failed"):
+        await manager.close()
 
     assert manager._stacks == {}
     assert manager._sessions == {}
@@ -369,7 +372,7 @@ async def test_mcp_error_flag_remains_an_error_in_tool_adapter():
             input_schema={"type": "object"},
         ),
     )
-    result = await adapter.execute(adapter.input_model(), ToolExecutionContext(cwd=Path(".")))
+    result = await adapter.execute(adapter.parse_input({}), ToolExecutionContext(cwd=Path(".")))
     assert result.is_error and "unavailable" in result.output
 
 
@@ -406,7 +409,7 @@ async def test_schema_mismatch_is_returned_error_without_disconnecting_or_fabric
             input_schema={"type": "object"},
         ),
     )
-    result = await adapter.execute(adapter.input_model(), ToolExecutionContext(cwd=Path.cwd()))
+    result = await adapter.execute(adapter.parse_input({}), ToolExecutionContext(cwd=Path.cwd()))
     assert result.is_error and result.metadata["error_code"] == "invalid_response"
     assert result.metadata["research_source_specs"] == []
     assert "finance/financials" in result.metadata["detail"]

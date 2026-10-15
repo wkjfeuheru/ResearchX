@@ -164,40 +164,15 @@ Fetch the PR diff, review for bugs, style issues, and security problems.
 # ====================================================================
 # 5. Plugins: load manifest and discover skills
 # ====================================================================
-async def test_plugins_load():
-    """Create a plugin directory, load it, verify manifest and skills."""
-    from researchx.plugins.loader import load_plugin
+async def test_standalone_skills_load():
+    from researchx.skills.loader import load_skills_from_dirs
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        plugin_dir = Path(tmpdir) / "my-plugin"
-        plugin_dir.mkdir()
-
-        # plugin.json
-        manifest = {
-            "name": "my-plugin",
-            "version": "1.0.0",
-            "description": "Test plugin for integration testing",
-            "enabled_by_default": True,
-            "skills_dir": "skills",
-        }
-        (plugin_dir / "plugin.json").write_text(json.dumps(manifest))
-
-        # skills
-        skills_dir = plugin_dir / "skills"
-        skills_dir.mkdir()
-        deploy_dir = skills_dir / "deploy"
-        deploy_dir.mkdir()
-        (deploy_dir / "SKILL.md").write_text("""---
-name: deploy
-description: Deploy the application
----
-Build and deploy the app to production.
-""")
-
-        loaded = load_plugin(plugin_dir, enabled_plugins={})
-        print(f"  Plugin: {loaded.name if loaded else 'FAILED TO LOAD'}")
-        assert loaded is not None
-        assert loaded.name == "my-plugin" and len(loaded.skills) >= 1
+        skill = Path(tmpdir) / "deploy"
+        skill.mkdir()
+        (skill / "SKILL.md").write_text("---\nname: deploy\ndescription: Deploy application\n---\nBuild and deploy")
+        loaded = load_skills_from_dirs([Path(tmpdir)])
+        assert len(loaded) == 1 and loaded[0].name == "deploy"
 
 
 # ====================================================================

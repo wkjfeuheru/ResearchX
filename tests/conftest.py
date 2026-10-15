@@ -18,6 +18,7 @@ async def postgres_scope(monkeypatch, tmp_path):
     if not (name.endswith("_test") or name.startswith("test_")):
         pytest.fail("Use a disposable database named test_* or *_test")
     monkeypatch.setenv("RESEARCHX_CONTENT_BACKEND", "local")
+    monkeypatch.setenv("PYTHON_KEYRING_BACKEND", "keyring.backends.fail.Keyring")
     monkeypatch.delenv("RESEARCHX_CONTENT_ROOT", raising=False)
     monkeypatch.setenv("RESEARCHX_DATABASE_URL", url)
     monkeypatch.setenv("RESEARCHX_DATA_DIR", str(tmp_path / "data"))

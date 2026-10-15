@@ -27,8 +27,39 @@ def fixture(kind):
     return json.loads((FIXTURES / f"{kind}.json").read_text())
 
 
+def align_financial_basis(payload):
+    """Keep mutated periods on one strict basis so production no longer has a weak path."""
+    company = payload["company"]
+    for period in payload["periods"]:
+        currency = period.get("currency")
+        for metric, amount in period["items"].items():
+            if not currency or amount.get("value") is None:
+                amount.pop("fact_basis", None)
+                continue
+            for ref in amount.get("references") or []:
+                ref.setdefault("evidence_id", f"ev_{metric}")
+            amount["fact_basis"] = {
+                "security_code": company["code"],
+                "market": company["market"],
+                "period_start": period["start"],
+                "period_end": period["end"],
+                "period_type": "annual",
+                "scope": period.get("scope") or "consolidated",
+                "currency": currency,
+                "unit": amount["unit"],
+                "adjustment": "restated" if period.get("restated") else "as_reported",
+                "value_kind": "actual",
+                "as_of": payload["as_of"],
+                "published_at": "2026-03-01T00:00:00+08:00",
+                "metric_id": metric,
+            }
+
+
 def compute(kind, data=None):
-    return FUNCTIONS[kind](RESULT_TYPES[kind].model_validate(data or fixture(kind)))
+    payload = data or fixture(kind)
+    if kind == "financial":
+        align_financial_basis(payload)
+    return FUNCTIONS[kind](RESULT_TYPES[kind].model_validate(payload))
 
 
 def test_text_pdf_and_cross_page_positions():
@@ -208,6 +239,8 @@ def test_deep_three_scenarios_and_reproducible_sensitivity():
     )
     data = fixture("deep")
     data["base_year"] = 2024
+    data["base_revenue"]["fact_basis"]["period_start"] = "2024-01-01"
+    data["base_revenue"]["fact_basis"]["period_end"] = "2024-12-31"
     for scenario in data["scenarios"]:
         for index, year in enumerate(scenario["years"]):
             year["year"] = 2025 + index
@@ -289,8 +322,13 @@ def test_restated_comparative_takes_priority_and_missing_currency_stays_unknown(
     data["periods"].extend([prior, restated])
     result = compute("financial", data)
     revenue_changes = [row for row in result.changes if row["metric"] == "revenue"]
-    assert len(revenue_changes) == 1 and revenue_changes[0]["prior"] == "2024重述"
-    assert revenue_changes[0]["yoy"] == Decimal(".25")
+    assert revenue_changes == []
+    assert any("跨期口径不一致" in gap for gap in result.gaps)
+    data["periods"].remove(prior)
+    restated["restated"] = False
+    comparable = compute("financial", data)
+    revenue_changes = [row for row in comparable.changes if row["metric"] == "revenue"]
+    assert len(revenue_changes) == 1 and revenue_changes[0]["yoy"] == Decimal(".25")
     data = fixture("financial")
     data["periods"][0].pop("currency")
     result = compute("financial", data)
@@ -368,9 +406,15 @@ async def test_business_and_export_scripts_from_another_cwd(kind, tmp_path):
     assert len(exported["artifacts"]) == 4
     assert len(await SessionFiles(store).list("artifacts")) == 4
     assert all(item["task_id"] == "script-task" for item in exported["artifacts"])
-    assert json.loads((tmp_path / "exports" / f"{kind}.json").read_text()) == json.loads(
-        output.read_text()
-    )
+    from researchx.workspace.exports import collect_references
+
+    registered = json.loads((tmp_path / "exports" / f"{kind}.json").read_text())
+    memory = await store.load()
+    for ref in collect_references(registered):
+        assert ref["source_id"] in memory.sources
+        assert memory.sources[ref["source_id"]].usage.internal_export_allowed
+        ref["source_id"] = None  # Only host-issued provenance differs from isolated output.
+    assert registered == json.loads(output.read_text())
     wb = load_workbook(tmp_path / "exports" / f"{kind}.xlsx", data_only=True)
     if kind in {"financial", "deep", "digest"}:
         sheet, field, expected = {
@@ -406,7 +450,7 @@ def test_business_script_rejects_other_skill_input_without_output(tmp_path):
 
 def test_copied_plugin_packages_keep_sibling_models_isolated(tmp_path):
     from importlib import import_module
-    from researchx.plugins.research_script_support import script_package
+    from researchx.skills.runtime_support import script_package
 
     loaded = []
     for kind in ("financial", "monitor"):

@@ -5,10 +5,28 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import socket
+from contextlib import contextmanager, nullcontext
+from contextvars import ContextVar
+from typing import Iterator
 from enum import Enum
 from urllib.parse import ParseResult, urljoin, urlparse
 
 import httpx
+
+
+_request_limit: ContextVar[asyncio.Semaphore | None] = ContextVar(
+    "http_request_limit", default=None
+)
+
+
+@contextmanager
+def network_request_limit(limit: asyncio.Semaphore) -> Iterator[None]:
+    """Host-owned shared limit, inherited by search fan-out and child tasks."""
+    token = _request_limit.set(limit)
+    try:
+        yield
+    finally:
+        _request_limit.reset(token)
 
 
 _DEFAULT_PORTS = {
@@ -130,6 +148,33 @@ async def ensure_http_url_allowed(
 
 
 async def fetch_public_http_response(
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    params: dict[str, str] | None = None,
+    timeout: float = 15.0,
+    max_redirects: int = 5,
+    max_bytes: int | None = None,
+    proxy: str | None = None,
+    method: str = "GET",
+    json: dict[str, object] | None = None,
+) -> httpx.Response:
+    limit = _request_limit.get()
+    async with limit if limit is not None else nullcontext():
+        return await _fetch_public_http_response(
+            url,
+            headers=headers,
+            params=params,
+            timeout=timeout,
+            max_redirects=max_redirects,
+            max_bytes=max_bytes,
+            proxy=proxy,
+            method=method,
+            json=json,
+        )
+
+
+async def _fetch_public_http_response(
     url: str,
     *,
     headers: dict[str, str] | None = None,

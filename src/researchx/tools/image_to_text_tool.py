@@ -9,6 +9,8 @@ of the image via a separately configured vision-capable model.
 from __future__ import annotations
 
 import base64
+import binascii
+import hashlib
 import logging
 from typing import Any
 
@@ -87,6 +89,28 @@ class ImageToTextTool(BaseTool[ImageToTextToolInput]):
                 output="image_to_text failed: provide either image_data (base64) or image_path",
                 is_error=True,
             )
+        policy_store = context.metadata.get("research_store")
+        workspace_runtime = context.metadata.get("research_workspace_runtime")
+        if policy_store is None and workspace_runtime is not None:
+            policy_store = workspace_runtime.store
+        if policy_store is not None:
+            from researchx.state.source_policy import image_use_allowed, request_policy_view
+
+            try:
+                digest = hashlib.sha256(base64.b64decode(image_data, validate=True)).hexdigest()
+            except (ValueError, binascii.Error):
+                return ToolResult(
+                    output="图像数据编码无效。", is_error=True, error_code="invalid_input"
+                )
+            policy_view, approved_artifact_hashes = await request_policy_view(
+                policy_store.workspace_id, policy_store.session_id, [], {digest}
+            )
+            if not image_use_allowed(policy_view, digest, approved_artifact_hashes):
+                return ToolResult(
+                    output="图像来源使用范围尚未确认，不能发送至外部视觉模型。",
+                    is_error=True,
+                    error_code="source_use_not_authorized",
+                )
 
         # 2. Get vision model config from context metadata
         vision_config = context.metadata.get("vision_model_config", {})

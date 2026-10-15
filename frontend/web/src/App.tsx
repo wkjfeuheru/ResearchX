@@ -26,6 +26,7 @@ export default function App() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [profile, setProfile] = useState('');
   const [draft, setDraft] = useState('');
+  const [researchType, setResearchType] = useState('');
   const [attachments, setAttachments] = useState<SessionFile[]>([]);
   const [artifacts, setArtifacts] = useState<SessionFile[]>([]);
   const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
@@ -143,7 +144,7 @@ export default function App() {
     setCreating(true); setError('');
     try {
       const id = await ensureSession();
-      chat.send(id, draft.trim() || '请分析本次提交的附件，先识别资料类型与解析缺口。', selectedProfile, selectedFiles);
+      chat.send(id, draft.trim() || '请分析本次提交的附件，先识别资料类型与解析缺口。', selectedProfile, selectedFiles, researchType);
     } catch (error) { setError(errorText(error)); } finally { setCreating(false); }
   }
   function resetConversation() {
@@ -188,10 +189,10 @@ export default function App() {
       {(error || chat.error) && <div className="global-error"><ErrorBanner message={error || chat.error} onClose={() => { setError(''); chat.setError(''); }} /></div>}
       {loading ? <div className="app-loading"><LoaderCircle className="spin" size={25} />正在连接本地工作台…</div> : page === 'chat' ?
         <ChatPage session={chat.session} models={models} skills={skills} selectedProfile={selectedProfile} onProfile={changeProfile}
-          draft={draft} setDraft={setDraft} busy={chat.busy || creating} status={chat.status} connected={chat.connected} hasSession={!!sessionId}
+          draft={draft} setDraft={setDraft} researchType={researchType} setResearchType={setResearchType} busy={chat.busy || creating} status={chat.status} connected={chat.connected} hasSession={!!sessionId}
           attachments={attachments} artifacts={artifacts} selectedFiles={selectedFiles} uploading={uploading}
           onUpload={uploadFiles} onRemoveFile={removeFile} onSelectFile={id => setSelectedFiles(current => current.includes(id) ? current.filter(key => key !== id) : current.length < 10 ? [...current, id] : current)}
-          onSubmit={submit} onCancel={chat.cancel} onSteer={() => chat.steer(draft)} onSettings={() => navigate('models')} onSkills={() => navigate('skills')} prompt={chat.prompt} onRespond={chat.respond} /> :
+          onSubmit={submit} onCancel={chat.cancel} onSteer={() => chat.steer(draft, researchType)} onSettings={() => navigate('models')} onSkills={() => navigate('skills')} prompt={chat.prompt} onRespond={chat.respond} /> :
         page === 'models' ? <ModelPage models={models} refresh={refreshCatalog} /> :
         <SkillPage skills={skills} refresh={refreshCatalog} onTry={text => { setDraft(text); navigate('chat'); }} />}
       {page !== 'chat' && chat.busy && <button className="running-banner" onClick={() => navigate('chat')}><LoaderCircle size={16} className="spin" />对话正在运行 · 返回查看进度{chat.prompt && '（等待操作确认）'}<ChevronRight size={16} /></button>}

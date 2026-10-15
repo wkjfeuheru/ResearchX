@@ -17,7 +17,8 @@ from researchx.storage.research_records import scope
 
 if TYPE_CHECKING:
     from researchx.state.store import ResearchStore
-from typing_extensions import TypedDict
+    from researchx.state.models import ResearchMemory
+from typing_extensions import TypedDict, NotRequired
 from pydantic import TypeAdapter
 from researchx.storage.filesystem import private_directory
 from researchx.state.errors import ResearchError
@@ -26,12 +27,13 @@ from researchx.state.errors import ResearchError
 class AssignmentRecord(TypedDict):
     task_id: str
     instruction: str
+    title: NotRequired[str | None]
     context: str | None
 
 
 class DispatchAudit(TypedDict, total=False):
     dispatch_id: str
-    project_id: str
+    project_id: str | None
     parent_task_id: str
     parent_execution_id: str | None
     task_revision: int
@@ -43,6 +45,9 @@ class DispatchAudit(TypedDict, total=False):
     tasks: list[AssignmentRecord]
     results: list[dict[str, object]]
     recovered: bool
+    version: int
+    scope: dict[str, object]
+    branches: list[dict[str, object]]
 
 
 def dispatch_directory(store_directory: Path, dispatch_id: str) -> Path:
@@ -129,6 +134,27 @@ async def write_batch(store: ResearchStore, payload: Mapping[str, object]) -> No
         )
         if existing and existing["owner"] != owner:
             raise ResearchError("Dispatch belongs to another owner")
+        old = existing["payload"] if existing else {}
+        batch["version"] = int(old.get("version", 0)) + 1
+        if "branches" not in batch:
+            batch["branches"] = old.get(
+                "branches",
+                [
+                    {
+                        "task_id": task["task_id"],
+                        "title": task.get("title") or task["instruction"][:120],
+                        "status": "queued",
+                    }
+                    for task in batch.get("tasks", [])
+                ],
+            )
+        outcomes = {item["task_id"]: item for item in batch.get("results", [])}
+        for branch in batch.get("branches", []):
+            result = outcomes.get(str(branch["task_id"]))
+            if result:
+                branch["status"] = (
+                    "awaiting_review" if result["status"] == "completed" else result["status"]
+                )
         values = dict(
             workspace_id=store.workspace_id,
             session_id=store.session_id,
@@ -146,6 +172,158 @@ async def write_batch(store: ResearchStore, payload: Mapping[str, object]) -> No
         )
 
 
+async def write_branch(store: ResearchStore, dispatch_id: str, task_id: str, status: str) -> None:
+    from researchx.state.models import now
+
+    async with store.transaction():
+        batch = await read_batch(store, dispatch_id)
+        branch = next(item for item in batch.get("branches", []) if item["task_id"] == task_id)
+        branch.update(status=status, updated_at=now())
+        if status == "running":
+            branch["started_at"] = now()
+        await write_batch(store, batch)
+
+
+async def authorised_candidate_file(store: ResearchStore, path: Path, digest: str) -> bool:
+    """Only unchanged host-recorded child notes may re-enter the parent model."""
+    from researchx.state.models import SourceUsage
+    from researchx.state.source_policy import may_enter_external_model
+
+    memory = await store.load()
+    async with store.transaction() as db:
+        payloads = await db.scalars(
+            select(dispatches.c.payload).where(
+                scope(dispatches, store.workspace_id, store.session_id)
+            )
+        )
+        for batch in payloads:
+            for result in batch.get("results", []):
+                if result.get("status") != "completed":
+                    continue
+                candidates = {
+                    item["content_hash"]: item for item in result.get("candidate_sources", [])
+                }
+                for record in result.get("output_records", []):
+                    if record.get("path") != str(path) or record.get("hash") != digest:
+                        continue
+                    for key in record.get("source_hashes", []):
+                        source = candidates.get(key)
+                        if source is None or not may_enter_external_model(
+                            SourceUsage.model_validate(source.get("__host_usage", {}))
+                        ):
+                            return False
+                        if any(
+                            item.content_hash == key and not may_enter_external_model(item.usage)
+                            for item in memory.sources.values()
+                        ):
+                            return False
+                    for key in record.get("evidence_refs", []):
+                        evidence = memory.evidence_pool.get(key)
+                        if evidence is None or not may_enter_external_model(
+                            memory.sources[evidence.source_id].usage
+                        ):
+                            return False
+                    return True
+    return False
+
+
+async def public_dispatch_progress(
+    store: ResearchStore, memory: ResearchMemory
+) -> list[dict[str, object]]:
+    """Only public branch labels/status; never expose instructions or source bodies."""
+    async with store.records.database.transaction() as db:
+        payloads = await db.scalars(
+            select(dispatches.c.payload).where(
+                scope(dispatches, store.workspace_id, store.session_id)
+            )
+        )
+        output = []
+        plan = memory.plans.get(memory.research_state.current_plan_id or "")
+        for batch in payloads:
+            binding = batch.get("scope", {})
+            if binding:
+                if binding.get("plan_id") != memory.research_state.current_plan_id:
+                    continue
+            elif not memory.project or batch.get("project_id") != memory.project.id:
+                continue
+            results = {item["task_id"]: item for item in batch.get("results", [])}
+            branches = []
+            for branch in batch.get("branches", []):
+                item = dict(branch)
+                result = results.get(str(item["task_id"]), {})
+                candidates = [
+                    candidate
+                    for candidate in result.get("candidate_sources", [])
+                    if not candidate.get("fragment", True) and candidate.get("kind") != "search"
+                ]
+                hashes = {
+                    candidate["content_ref"].removeprefix("sha256:") for candidate in candidates
+                }
+                replaced = {
+                    evidence.supersedes
+                    for evidence in memory.evidence_pool.values()
+                    if evidence.supersedes
+                }
+                checked_records = {
+                    evidence.id: evidence
+                    for evidence in memory.evidence_pool.values()
+                    if evidence.id not in replaced
+                    and evidence.status in {"source_checked", "verified"}
+                    and not evidence.needs_review
+                    and (
+                        evidence.plan_id == memory.research_state.current_plan_id
+                        or bool(plan and evidence.id in plan.reused_evidence_ids)
+                    )
+                }
+                checked = {
+                    memory.sources[evidence.source_id].content_hash
+                    for evidence in checked_records.values()
+                }
+                parent = (
+                    next(
+                        (task for task in plan.tasks if task.id == batch.get("parent_task_id")),
+                        None,
+                    )
+                    if plan
+                    else None
+                )
+                refs = set(result.get("evidence_refs", []))
+                used = set(parent.finding_ids) if parent else set()
+                if parent:
+                    used.update(
+                        evidence.id
+                        for evidence in checked_records.values()
+                        if evidence.task_id == parent.id
+                    )
+                    for artifact_id in parent.artifact_ids:
+                        artifact = memory.artifacts.get(artifact_id)
+                        if artifact:
+                            used.update(artifact.evidence_ids)
+                    for criterion_refs in parent.criterion_results.values():
+                        used.update(criterion_refs)
+                checked_inputs = bool(hashes and hashes <= checked) or bool(
+                    refs and refs <= checked_records.keys() and refs <= used
+                )
+                item["reviewed"] = bool(
+                    result.get("status") == "completed"
+                    and checked_inputs
+                    and parent
+                    and parent.status == "completed"
+                    and parent.task_revision == batch.get("task_revision", parent.task_revision)
+                )
+                branches.append(item)
+            output.append(
+                {
+                    "dispatch_id": batch["dispatch_id"],
+                    "version": batch.get("version", 0),
+                    "parent_task_id": batch.get("parent_task_id"),
+                    "status": batch["status"],
+                    "branches": branches,
+                }
+            )
+        return output
+
+
 async def write_result(store: ResearchStore, dispatch_id: str, result: dict[str, object]) -> None:
     async with store.transaction():
         batch = await read_batch(store, dispatch_id)
@@ -158,11 +336,22 @@ async def write_result(store: ResearchStore, dispatch_id: str, result: dict[str,
                 raise ResearchError("Dispatch result already committed with different content")
             return
         results.append(result)
+        for branch in batch.get("branches", []):
+            if branch["task_id"] == result["task_id"]:
+                from researchx.state.models import now
+
+                branch.update(
+                    status="awaiting_review"
+                    if result["status"] == "completed"
+                    else result["status"],
+                    completed_at=now(),
+                    updated_at=now(),
+                )
         await write_batch(store, dict(batch))
 
 
 async def recover_dispatches(
-    store: ResearchStore, project_id: str, workspace: Path | None = None
+    store: ResearchStore, project_id: str | None, workspace: Path | None = None
 ) -> bool:
     async with store.transaction() as db:
         rows = (
@@ -221,6 +410,10 @@ async def recover_dispatches(
                         "output_paths": paths,
                         "errors": ["Dispatch owner exited before durable completion"],
                     }
+                for branch in batch.get("branches", []):
+                    if branch.get("status") in {"queued", "running"}:
+                        branch["status"] = "interrupted"
+                batch["version"] = batch.get("version", 0) + 1
                 batch.update(
                     {"status": "interrupted", "results": list(results.values()), "recovered": True}
                 )

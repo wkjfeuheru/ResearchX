@@ -234,7 +234,7 @@ async def test_schema_initialized_once_with_hot_query_indexes(tmp_path, postgres
             assert any("Index" in row for row in plan)
             definition = await db.scalar(text("SELECT indexdef FROM pg_indexes WHERE indexname='ix_operations_resources'"))
             assert "(workspace_id, scope, status)" in definition
-            assert await db.scalar(text("SELECT version_num FROM alembic_version")) == "0003_child_sessions"
+            assert await db.scalar(text("SELECT version_num FROM alembic_version")) == "0007_research_assets"
         assert not any("CREATE " in statement for statement in statements)
     finally:
         event.remove(postgres_scope.engine.sync_engine, "before_cursor_execute", trace)

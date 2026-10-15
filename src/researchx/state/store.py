@@ -6,7 +6,6 @@ from collections.abc import Mapping
 from researchx.state.models import (
     PendingSteer,
     SourceKind,
-    Record,
     CitationSnapshot,
     SourceDisplay,
 )
@@ -15,7 +14,7 @@ import hashlib
 import json
 import re
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, cast, Literal
 from urllib.parse import urlsplit
 
 from pydantic import TypeAdapter
@@ -29,6 +28,7 @@ from researchx.state.models import (
     CreatePlan,
     Evidence,
     ReadMemory,
+    SearchMemory,
     ReasoningStep,
     ResearchMemory,
     ResearchOperation,
@@ -36,10 +36,12 @@ from researchx.state.models import (
     ResearchTask,
     SetContext,
     SourceRecord,
+    SourceUsage,
     TaskContext,
     UpdateTask,
     VerifyEvidence,
     now,
+    new_id,
 )
 from researchx.services.context.token_estimation import estimate_tokens
 from researchx.storage.filesystem import private_directory
@@ -478,7 +480,12 @@ class ResearchStore(ConflictStoreMixin):
         fragment: bool = False,
         is_error: bool = False,
         published_at: str | None = None,
+        event_at: str | None = None,
         index: int = 0,
+        usage: SourceUsage | None = None,
+        original_locator: str | None = None,
+        corrects_source_id: str | None = None,
+        request_profile: Literal["event_commentary", "financial_commentary"] | None = None,
     ) -> SourceRecord:
         """Program-only provenance entrypoint; write immutable content before its reference."""
         source_id = "src_" + hashlib.sha256(f"{origin_id}:{index}".encode()).hexdigest()[:20]
@@ -501,10 +508,15 @@ class ResearchStore(ConflictStoreMixin):
                 origin_id=origin_id,
                 collected_at=now(),
                 published_at=published_at,
+                event_at=event_at,
                 content_hash=content_hash,
                 snapshot=snapshot,
                 fragment=fragment,
                 is_error=is_error,
+                usage=usage or SourceUsage(),
+                original_locator=original_locator,
+                corrects_source_id=corrects_source_id,
+                request_profile=request_profile if kind == "user" else None,
             )
             memory.sources[source.id] = source
             (await self._save(memory, "capture_source", {"source_id": source.id}))
@@ -520,34 +532,75 @@ class ResearchStore(ConflictStoreMixin):
         except (OSError, ValueError) as exc:
             raise ResearchError("资料快照校验失败；原内容已保留") from exc
 
+    async def _read_by_ids(self, operation: ReadMemory, *, model_access: bool) -> dict[str, object]:
+        from researchx.state.episodes import EpisodicRepository
+        from researchx.state.source_policy import may_enter_external_model
+
+        # read_records takes a shared lock on the revision row. Keep its outer
+        # transaction open through permission checks and content retrieval so
+        # concurrent source reclassification cannot revoke this snapshot midway.
+        async with current_database().transaction():
+            revision, records, referenced_sources = await EpisodicRepository(
+                self.workspace_id, self.session_id
+            ).read_records(operation.ids, strict=model_access)
+            if model_access:
+                restricted_sources = {
+                    key
+                    for key, (kind, payload) in records.items()
+                    if kind == "source"
+                    and (source := SourceRecord.model_validate(payload)).kind != "user"
+                    and not may_enter_external_model(source.usage)
+                }
+                for key in operation.ids:
+                    if referenced_sources[key] & restricted_sources:
+                        raise ResearchError("来源授权尚未确认，不能向当前模型提供此记录")
+            record_results = []
+            source_ids: set[str] = set().union(*referenced_sources.values())
+            for key in operation.ids:
+                kind, item = records[key]
+                item = dict(item)
+                if kind == "source" and operation.include_content:
+                    item["content"] = await self.read_source(SourceRecord.model_validate(item))
+                record_results.append(item)
+            return {
+                "revision": revision,
+                "records": record_results,
+                "source_ids": sorted(source_ids),
+            }
+
     async def apply(
-        self, data: dict[str, Any], *, budget: int | None = None, model: str = ""
+        self,
+        data: dict[str, Any],
+        *,
+        budget: int | None = None,
+        model: str = "",
+        model_access: bool = False,
     ) -> dict[str, object]:
         operation = OPERATION_ADAPTER.validate_python(data)
+        if isinstance(operation, SearchMemory):
+            from researchx.state.episodes import EpisodeQuery, EpisodicRepository
+
+            return await EpisodicRepository(self.workspace_id, self.session_id).search(
+                EpisodeQuery(
+                    query=operation.query,
+                    record_types=tuple(operation.record_types),
+                    task_id=operation.task_id,
+                    status=operation.status,
+                    cursor=operation.cursor,
+                    limit=operation.limit,
+                )
+            )
         if isinstance(operation, ReadMemory):
-            memory = await self.load()
+            if model_access and not operation.ids:
+                from researchx.state.episodes import EpisodicRepository
+
+                return await EpisodicRepository(
+                    self.workspace_id, self.session_id
+                ).context_summary()
             if not operation.ids:
-                return self.view(memory)
-            records: dict[str, Record] = {item.id: item for item in memory.task_context}
-            for bucket in (
-                memory.plans,
-                memory.sources,
-                memory.evidence_pool,
-                memory.reasoning_chain,
-                memory.conclusions,
-                memory.conflicts,
-                memory.arbitrations,
-            ):
-                records.update(bucket)
-            self._require(operation.ids, records, "record")
-            record_results = []
-            for key in operation.ids:
-                record = records[key]
-                item = record.model_dump(mode="json")
-                if isinstance(record, SourceRecord) and operation.include_content:
-                    item["content"] = await self.read_source(record)
-                record_results.append(item)
-            return {"revision": memory.revision, "records": record_results}
+                memory = await self.load()
+                return self.model_view(memory) if model_access else self.view(memory)
+            return await self._read_by_ids(operation, model_access=model_access)
         fingerprint = hashlib.sha256(
             json.dumps(data, sort_keys=True, ensure_ascii=False).encode()
         ).hexdigest()
@@ -563,8 +616,8 @@ class ResearchStore(ConflictStoreMixin):
                     f"Revision conflict: expected {operation.expected_revision}, current {memory.revision}; read and retry with a new operation_id"
                 )
             result = await self._apply(memory, operation)
-            if budget is not None:
-                self._prompt(memory, budget, model=model)
+            # The old full-aggregate prompt is no longer the request boundary.
+            # The bounded context composer checks its own final recall budget.
             progress = await self.progress(memory)
             progress["revision"] = memory.revision + 1
             receipt = {"revision": memory.revision + 1, **result, "progress": progress}
@@ -589,6 +642,7 @@ class ResearchStore(ConflictStoreMixin):
             for task in plan.tasks:
                 if task.status in {"pending", "in_progress", "blocked"}:
                     task.status = "cancelled"
+                    task.lease_id = None
                     task.updated_at = now()
         state.current_plan_id = None
         state.current_task_id = None
@@ -737,6 +791,7 @@ class ResearchStore(ConflictStoreMixin):
                 task.started_at, task.completed_at = task.started_at or timestamp, None
                 task.blocker, task.completion_note = "", ""
                 state.current_task_id = task.id
+                task.lease_id = new_id("lease")
             elif operation.status == "completed":
                 if state.current_task_id != task.id:
                     raise ResearchError("Only the current task can be completed")
@@ -750,6 +805,7 @@ class ResearchStore(ConflictStoreMixin):
                 task.completion_note = operation.completion_note
                 task.blocker = ""
                 state.current_task_id = None
+                task.lease_id = None
             else:
                 if state.current_task_id != task.id:
                     raise ResearchError("Only the current task can be blocked")
@@ -758,6 +814,7 @@ class ResearchStore(ConflictStoreMixin):
                 task.blocker, task.completed_at = operation.blocker, None
                 task.completion_note = ""
                 state.current_task_id = None
+                task.lease_id = None
             task.status, task.updated_at = operation.status, timestamp
             state.next_step = operation.next_step
             if operation.unresolved is not None:
@@ -940,8 +997,12 @@ class ResearchStore(ConflictStoreMixin):
         state = memory.research_state
         plan = memory.plans.get(state.current_plan_id or "")
         tasks = [task.model_dump(mode="json") for task in plan.tasks] if plan else []
+        from researchx.state.dispatch_audit import public_dispatch_progress
+
+        dispatches = await public_dispatch_progress(self, memory)
         return {
             "revision": memory.revision,
+            "dispatches": dispatches,
             "plan_id": plan.id if plan else None,
             "title": plan.title
             if plan
@@ -1092,6 +1153,55 @@ class ResearchStore(ConflictStoreMixin):
             ],
         }
 
+    @staticmethod
+    def model_view(memory: ResearchMemory) -> dict[str, object]:
+        from researchx.state.source_policy import may_enter_external_model
+
+        view = ResearchStore.view(memory)
+        allowed = {
+            key for key, source in memory.sources.items() if may_enter_external_model(source.usage)
+        }
+        view["sources"] = [
+            item for item in cast(list[dict[str, Any]], view["sources"]) if item["id"] in allowed
+        ]
+        view["evidence_pool"] = [
+            item
+            for item in cast(list[dict[str, Any]], view["evidence_pool"])
+            if item["source_id"] in allowed
+        ]
+        valid_evidence = {item["id"] for item in cast(list[dict[str, Any]], view["evidence_pool"])}
+        view["conclusions"] = [
+            item
+            for item in cast(list[dict[str, Any]], view["conclusions"])
+            if set(item["evidence_ids"]) <= valid_evidence
+        ]
+        view["reasoning_chain"] = [
+            item
+            for item in cast(list[dict[str, Any]], view["reasoning_chain"])
+            if set(item["evidence_ids"]) <= valid_evidence and item["evidence_ids"]
+        ]
+        # Keep actionable conflict identity, while withholding restricted narratives.
+        safe_conflicts = []
+        for item in cast(list[dict[str, Any]], view["conflicts"]):
+            refs = {key for side in item.get("sides", []) for key in side.get("evidence_ids", [])}
+            safe_conflicts.append(
+                item
+                if refs <= valid_evidence
+                else {
+                    "id": item["id"],
+                    "status": item.get("status"),
+                    "core": item.get("core"),
+                    "question": "存在待核对冲突；相关来源授权确认前不向模型提供内容。",
+                }
+            )
+        view["conflicts"] = safe_conflicts
+        if any(
+            source.kind in {"web", "file", "mcp", "search"} and key not in allowed
+            for key, source in memory.sources.items()
+        ):
+            view["arbitrations"] = []
+        return view
+
     async def prompt(self, budget: int = 6000, *, model: str = "") -> str:
         return self._prompt((await self.load()), budget, model=model)
 
@@ -1121,7 +1231,7 @@ class ResearchStore(ConflictStoreMixin):
         model: str = "",
         memory_budget: int | None = None,
     ) -> str:
-        view = self.view(memory)
+        view = self.model_view(memory)
         required = {
             key: view[key]
             for key in ("session_id", "revision", "task_context", "research_state", "plan")
@@ -1237,6 +1347,7 @@ class ResearchStore(ConflictStoreMixin):
                 for task in plan.tasks:
                     if task.status == "in_progress":
                         task.status, task.blocker, task.updated_at = "blocked", "执行已停止", now()
+                        task.lease_id = None
                         changed = True
                 if changed:
                     memory.research_state.current_task_id = None

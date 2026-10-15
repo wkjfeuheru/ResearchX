@@ -449,7 +449,7 @@ async def test_recovery_cannot_reset_total_tool_attempt_limit(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_plugin_collision_cannot_replace_builtin_and_closes_transports(tmp_path, monkeypatch):
+async def test_registration_collision_closes_transports(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from researchx import runtime
 
@@ -457,11 +457,13 @@ async def test_plugin_collision_cannot_replace_builtin_and_closes_transports(tmp
     monkeypatch.setenv("RESEARCHX_DATA_DIR", str(tmp_path / "data"))
     manager = SimpleNamespace(list_tools=lambda: [], close=AsyncMock())
     client = AsyncMock()
-    monkeypatch.setattr(
-        runtime,
-        "load_plugins",
-        lambda *args, **kwargs: [SimpleNamespace(enabled=True, tools=[FileWriteTool()])],
-    )
+    def duplicate_registration(manager):
+        registry = ToolRegistry()
+        registry.register(FileWriteTool())
+        registry.register(FileWriteTool())
+        return registry
+
+    monkeypatch.setattr(runtime, "create_research_tool_registry", duplicate_registration)
     monkeypatch.setattr(runtime, "load_mcp_server_configs", lambda *args: {})
     monkeypatch.setattr(runtime, "McpClientManager", lambda *args: manager)
     with pytest.raises(ValueError, match="Duplicate/protected"):

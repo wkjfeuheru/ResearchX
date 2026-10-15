@@ -190,7 +190,7 @@ class ExperimentRunner:
                 )
         sid = uuid4().hex[:12]
         settings = self.agent_settings.model_copy(deep=True)
-        settings.enabled_plugins.update({name: False for name in case.disabled_plugins})
+        settings.enabled_skills.update({name: False for name in case.disabled_skills})
         # Fixed replay never opens configured external MCP connections.
         if case.environment == "fixed":
             settings.mcp_servers = {}
@@ -241,7 +241,7 @@ class ExperimentRunner:
                 # 便于区分“冻结预算”与“本次执行实际预算”。
                 "budget": case.budget.model_dump(),
                 "budget_overrides": dict(self.budget_overrides),
-                "disabled_plugins": case.disabled_plugins,
+                "disabled_skills": case.disabled_skills,
                 "permission_policy_hash": fingerprint(settings.permission.model_dump()),
             },
         )
@@ -319,13 +319,12 @@ class ExperimentRunner:
                 )
                 await start_runtime(current)
                 return current
-            except BaseException:
+            except BaseException as exc:
                 if current is not None:
-                    await close_runtime(current)
-                else:
-                    close = getattr(client, "close", None)
-                    if close:
-                        await close()
+                    try:
+                        await close_runtime(current)
+                    except BaseException as cleanup_error:
+                        setattr(exc, "cleanup_errors", [cleanup_error])
                 raise
 
         async def execute_turn(
@@ -498,8 +497,8 @@ class ExperimentRunner:
                     artifact.error = artifact.error or "研究状态或产物读取失败"
                 try:
                     await close_runtime(bundle)
-                except Exception:
-                    artifact.error = artifact.error or "运行资源关闭失败"
+                except Exception as exc:
+                    artifact.provenance["cleanup_error"] = type(exc).__name__
             artifact.scores = score_case(case, artifact)
             write_artifact(result_path, artifact)
         if self.judge_settings:

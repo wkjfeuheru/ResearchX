@@ -16,18 +16,27 @@ export interface ModelProfile {
 
 export interface Skill {
   id: string;
+  name: string;
   label: string;
+  source: 'builtin' | 'user' | 'project';
   description: string;
   version: string;
   enabled: boolean;
-  category: string;
-  example: string;
-  skills: { name: string; description: string; enabled: boolean; metadata: { owner: string; status: string; scope: string; permissions: string[]; required_tools: string[]; optional_tools: string[]; compatible_models: string[]; content_hash: string; deprecation: Record<string, string> | null } }[];
+  metadata: { owner: string; status: string; scope: string; permissions: string[]; required_tools: string[]; optional_tools: string[]; compatible_models: string[]; content_hash: string; deprecation: Record<string, string> | null };
 }
 
 export interface SessionFile {
   id: string; name: string; size: number; status: string; gaps?: string[];
   type?: string; kind?: string; task_id?: string | null;
+}
+
+export interface Delivery {
+  delivery_id: string; kind: 'answer' | 'report_draft' | 'report_file'; origin_id: string;
+  content_hash: string; manifest_hash: string;
+  status: 'awaiting_review' | 'blocked' | 'approved' | 'changes_requested' | 'invalidated';
+  profile: string; as_of: string;
+  coverage: { status: 'complete' | 'partial' | 'blocked'; gaps: string[] };
+  created_at: number; updated_at: number;
 }
 
 export interface Message {
@@ -77,6 +86,8 @@ export interface ResearchProgress {
   plan_id: string | null;
   title: string;
   current_task_id: string | null;
+  dispatches?: { dispatch_id: string; version: number; parent_task_id: string; status: string;
+    branches: { task_id: string; title: string; status: string; reviewed?: boolean }[] }[];
   tasks: { id: string; title: string; status: 'pending' | 'ready' | 'in_progress' | 'validating' | 'completed' | 'blocked' | 'failed' | 'cancelled';
     blocker: string; completion_note: string; updated_at: string; started_at: string | null; completed_at: string | null }[];
   completed: number;

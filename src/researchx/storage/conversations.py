@@ -190,14 +190,25 @@ class ConversationRecords:
         return results
 
     async def delete(self, session: str) -> None:
+        from researchx.storage.run_records import detach_conversation
+
         async with self.database.transaction() as db:
+            await detach_conversation(db, self.workspace, session)
             deleted = await db.scalar(
-                delete(s.research_sessions)
-                .where(scope(s.research_sessions, self.workspace, session))
-                .returning(s.research_sessions.c.session_id)
+                delete(s.conversation_sessions)
+                .where(scope(s.conversation_sessions, self.workspace, session))
+                .returning(s.conversation_sessions.c.session_id)
             )
             if deleted is None:
                 raise FileNotFoundError(session)
+            await db.execute(
+                delete(s.conversation_messages).where(
+                    scope(s.conversation_messages, self.workspace, session)
+                )
+            )
+            # research_sessions is still the parent of project and episode rows
+            # in the legacy schema. Keep it until those rows have been migrated
+            # to workspace ownership; deleting it would cascade research data.
         # Immutable content is retained. Database deletion must never race a new content reference.
 
 

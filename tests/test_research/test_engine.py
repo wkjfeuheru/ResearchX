@@ -71,7 +71,7 @@ class EmptyInput(BaseModel):
 
 
 class LargeSourceTool(BaseTool):
-    name = "test_source"
+    name = "web_fetch"
     description = "Test provenance"
     input_model = EmptyInput
 
@@ -87,7 +87,7 @@ class LargeSourceTool(BaseTool):
                     {
                         "kind": "web",
                         "title": "原始报告",
-                        "locator": "https://example.org/report",
+                        "locator": "https://www.sse.com.cn/report",
                         "content": text,
                         "fragment": False,
                     }
@@ -214,7 +214,7 @@ async def test_planned_retrieval_requires_committed_active_task(tmp_path):
     ))
     # A new logical request receives a fresh provider call ID, not the rejected operation ID.
     agent = engine(
-        tmp_path, store, LargeSourceTool(), OneToolModel(call_id="retrieval-after-task-start")
+        tmp_path, store, LargeSourceTool(), OneToolModel("web_fetch", call_id="retrieval-after-task-start")
     )
     _ = [event async for event in agent.submit_message("继续研究")]
     assert any(source.kind == "web" for source in (await store.load()).sources.values())

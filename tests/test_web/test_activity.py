@@ -109,7 +109,7 @@ async def test_crashed_running_projection_restores_as_stopped_history(workspace)
     ]
     (await app.state.workspace.store.write(record))
     rows = client.get(f"/api/sessions/{sid}").json()["messages"]
-    assert all(row["turn_status"] == "stopped" for row in rows)
+    assert all(row["turn_status"] == "paused" for row in rows)
     assert rows[0]["status"] == "interrupted" and rows[1]["phase"] == "progress"
     assert client.get(f"/api/sessions/{sid}").json()["messages"] == rows
 
@@ -279,3 +279,63 @@ def test_failure_keeps_progress_without_promoting_it_to_a_final_answer(workspace
     assert next(row for row in rows if row["role"] == "assistant")["phase"] == "progress"
     assert next(row for row in rows if row["role"] == "activity")["status"] == "failed"
     assert SECRET not in json.dumps(events)
+
+
+def test_restart_pauses_an_unfinished_run_without_calling_the_model(workspace):
+    client, _, requests, _, cwd = workspace
+    sid = add_session(client, add_model(client))
+    accepted = client.post(
+        f"/api/sessions/{sid}/commands",
+        json={"type": "submit", "request_id": "stable-run", "text": "hello"},
+    )
+    assert accepted.status_code == 202
+    from researchx.storage.database import current_database, workspace_id
+    from researchx.storage.run_records import (
+        prompt_status,
+        record_accepted_run,
+        record_prompt,
+        run_status,
+    )
+
+    wid = workspace_id(cwd)
+
+    async def status(run_id: str) -> str | None:
+        return await run_status(wid, run_id)
+
+    for _ in range(100):
+        if client.portal.call(status, "stable-run") == "completed":
+            break
+    else:
+        raise AssertionError("accepted run was not recorded as completed")
+
+    async def plant() -> None:
+        async with current_database().transaction() as db:
+            await record_accepted_run(
+                db,
+                workspace_id=wid,
+                session_id=sid,
+                run_id="left-running",
+                request_id="left-running",
+                status="running",
+            )
+        await record_prompt(
+            workspace_id=wid,
+            prompt_id="open-prompt",
+            run_id="left-running",
+            kind="permission",
+        )
+
+    client.portal.call(plant)
+    before = len(requests)
+    with TestClient(create_app(str(cwd)), base_url="http://localhost") as restarted:
+        assert restarted.get("/api/health").status_code == 200
+    assert len(requests) == before
+
+    async def after() -> tuple[str | None, str | None, str | None]:
+        return (
+            await run_status(wid, "left-running"),
+            await run_status(wid, "stable-run"),
+            await prompt_status(wid, "open-prompt"),
+        )
+
+    assert client.portal.call(after) == ("paused", "completed", "expired")

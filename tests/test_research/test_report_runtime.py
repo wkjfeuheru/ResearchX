@@ -74,6 +74,15 @@ async def checked_evidence(repo, key="sources"):
         execution["id"],
         [{"content": "营收120百万元人民币，FY2025", "kind": "file", "locator": "fixture:earnings"}],
     ))
+    from researchx.state.deliveries import DeliveryService, TrustedReviewer
+    from researchx.state.models import SourceUsage
+
+    await DeliveryService(repo.store).classify_source(
+        receipt["research_sources"][0],
+        SourceUsage(category="public", provider="offline_public_fixture", licence_status="pending",
+                    model_use_allowed=True, internal_export_allowed=True, completeness="full"),
+        principal=TrustedReviewer("fixture-curator", "compliance", "trusted_identity_provider"),
+    )
     ev = (await apply(
         repo.store,
         "add_evidence",

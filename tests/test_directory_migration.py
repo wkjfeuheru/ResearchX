@@ -85,7 +85,7 @@ def test_active_python_and_skills_use_current_module_paths():
                     value,
                 )
     commands = []
-    for path in (PACKAGE / "plugins/bundled").rglob("*.md"):
+    for path in (PACKAGE / "skills/bundled").rglob("*.md"):
         text = path.read_text()
         assert not any(old + "." in text for old in forbidden), path
         commands.extend(re.findall(r"-m (researchx[\w.-]+)", text))

@@ -85,7 +85,7 @@ async def test_e2e_06_project_switch_files_context_and_child_boundaries(lab):
         assert "BETA_PRIVATE_BACKGROUND" not in " ".join(
             message.runtime_context or "" for message in request.messages
         )
-        assert workspace_packet(request)["workspace"] == str(root)
+        assert workspace_packet(request)["workspace_id"] == store.workspace_id
     children = [
         request
         for request in model.requests
@@ -151,7 +151,9 @@ async def test_e2e_09_stale_patch_rejected_then_main_replans(lab):
     assert (
         len(model.planning_packets) == 4
     )  # Initial planner, v2 patch, rejected v1 patch, repaired v3 patch.
-    assert (await current_plan(store)).revision == 3 and (await store.load()).project.status == "completed"
+    assert (await current_plan(store)).revision == 3 and (
+        await store.load()
+    ).project.status == "completed"
 
 
 async def test_e2e_10_late_children_cannot_pollute_revised_plan(lab):
@@ -190,12 +192,13 @@ async def test_e2e_10_late_children_cannot_pollute_revised_plan(lab):
     model.hold.clear()
     model.release_child.set()
     await asyncio.wait_for(pending, timeout=60)
-    memory = (await store.load())
+    memory = await store.load()
     assert memory.executions[old_execution.id].status == "rejected"
     assert not any(
         source.origin_id == old_execution.tool_use_id for source in memory.sources.values()
     )
     from researchx.state.dispatch_audit import dispatch_summaries
+
     audits = await dispatch_summaries(store, "Alpha")
     old = next(item for item in audits if item["baseline"][2] == 1)
     assert all(item["status"] == "failed" and not item["evidence_refs"] for item in old["results"])
@@ -232,7 +235,13 @@ async def test_e2e_11_rejects_premature_task_then_main_repairs(lab, monkeypatch)
     assert failed["missing_requirements"] and failed["recommended_actions"]
     assert ("research", "validating") in statuses and ("draft", "validating") in statuses
     assert (
-        len([entry for entry in (await store.load()).history if entry["action"] == "task_completion_check"])
+        len(
+            [
+                entry
+                for entry in (await store.load()).history
+                if entry["action"] == "task_completion_check"
+            ]
+        )
         == 3
     )
     assert all(task.status == "completed" for task in (await current_plan(store)).tasks)
@@ -241,10 +250,13 @@ async def test_e2e_11_rejects_premature_task_then_main_repairs(lab, monkeypatch)
 
 async def test_e2e_12_completion_idempotency_and_dependency_readiness(lab):
     async def _deferred_step_3(_):
-        return ('research_project', await operation(store, 'resume'))
+        return ("research_project", await operation(store, "resume"))
 
     async def _deferred_step_4(_):
-        return ('research_project', await operation(store, 'complete_task', task_id='research', task_revision=1))
+        return (
+            "research_project",
+            await operation(store, "complete_task", task_id="research", task_revision=1),
+        )
 
     bundle, store, model, _, pending, _ = await pause_after_research(lab)
     await stop(pending)
@@ -269,22 +281,29 @@ async def test_e2e_12_completion_idempotency_and_dependency_readiness(lab):
     )
     assert results[2].is_error and "Invalid task transition" in results[2].output
     assert (await current_plan(store)).tasks[0].model_dump() == completed
-    assert (await current_plan(store)).tasks[1].status == "ready" and len((await store.load()).artifacts) == 1
+    assert (await current_plan(store)).tasks[1].status == "ready" and len(
+        (await store.load()).artifacts
+    ) == 1
 
 
 async def test_e2e_14_markdown_completion_claim_cannot_change_authority(lab):
     async def _deferred_step_5(_):
-        return ('research_project', await operation(store, 'resume'))
+        return ("research_project", await operation(store, "resume"))
 
     async def _deferred_step_6(_):
-        return ('research_project', await operation(store, 'claim_task', task_id='draft', task_revision=1))
+        return (
+            "research_project",
+            await operation(store, "claim_task", task_id="draft", task_revision=1),
+        )
 
     async def _deferred_step_7(_):
-        return ('research_project', await operation(store, 'finalize'))
+        return ("research_project", await operation(store, "finalize"))
 
     bundle, store, model, _, pending, _ = await pause_after_research(lab)
     await stop(pending)
-    before_records = {key: value.model_dump() for key, value in (await store.load()).evidence_pool.items()}
+    before_records = {
+        key: value.model_dump() for key, value in (await store.load()).evidence_pool.items()
+    }
     results, driver = await call_sequence(
         bundle,
         [
@@ -298,18 +317,16 @@ async def test_e2e_14_markdown_completion_claim_cannot_change_authority(lab):
             ("research_project", {"operation": {"action": "read"}}),
         ],
     )
-    assert (
-        not results[2].is_error
-        and "所有研究任务已经完成" in workspace_packet(driver.requests[-1])["content"]
-    )
+    assert not results[2].is_error
+    assert "所有研究任务已经完成" in (Path((await store.load()).project.workspace_path) / "MEMORY.md").read_text()
+    assert "所有研究任务已经完成" not in str(workspace_packet(driver.requests[-1]))
     completion = json.JSONDecoder().raw_decode(results[3].output)[0]
     assert not completion["passed"] and any(
         "All required tasks must complete" in value for value in completion["missing_requirements"]
     )
-    assert (
-        (await current_plan(store)).tasks[1].status == "in_progress"
-        and (await store.load()).project.status == "running"
-    )
+    assert (await current_plan(store)).tasks[1].status == "in_progress" and (
+        await store.load()
+    ).project.status == "running"
     assert before_records == {
         key: value.model_dump() for key, value in (await store.load()).evidence_pool.items()
     }
@@ -354,16 +371,19 @@ async def test_tool_registry_discovery_and_execution_compatibility(lab):
     assert "planner:" in results[0].output and "replanner:" in results[0].output
     assert "dispatch_subagents:" in results[1].output and not results[2].is_error
     assert results[3].is_error and "Unknown tool" in results[3].output
-    assert results[4].is_error and "active project workspace" in results[4].output
+    assert results[4].is_error and results[4].metadata["error_code"] == "research_task_required"
     assert (await store.load()).project is None
 
 
 async def test_report_shell_cwd_and_absolute_python_are_confined(lab):
     async def _deferred_step_8(_):
-        return ('research_project', await operation(store, 'resume'))
+        return ("research_project", await operation(store, "resume"))
 
     async def _deferred_step_9(_):
-        return ('research_project', await operation(store, 'claim_task', task_id='draft', task_revision=1))
+        return (
+            "research_project",
+            await operation(store, "claim_task", task_id="draft", task_revision=1),
+        )
 
     bundle, store, _, _, pending, _ = await pause_after_research(lab)
     await stop(pending)
@@ -386,10 +406,13 @@ async def test_report_shell_cwd_and_absolute_python_are_confined(lab):
 
 async def test_e2e_16_process_recovery_revokes_lease_between_tool_executions(lab):
     async def _deferred_step_10(_):
-        return ('research_project', await operation(store, 'resume'))
+        return ("research_project", await operation(store, "resume"))
 
     async def _deferred_step_11(_):
-        return ('research_project', await operation(store, 'claim_task', task_id='draft', task_revision=1))
+        return (
+            "research_project",
+            await operation(store, "claim_task", task_id="draft", task_revision=1),
+        )
 
     from researchx.state.repository import ResearchRepository
     from researchx.state.store import ResearchStore
@@ -420,10 +443,13 @@ async def test_e2e_16_process_recovery_revokes_lease_between_tool_executions(lab
 
 async def test_generic_conflict_candidates_bind_existing_evidence(lab):
     async def _deferred_step_1(_):
-        return ('research_project', await operation(store, 'resume'))
+        return ("research_project", await operation(store, "resume"))
 
     async def _deferred_step_2(_):
-        return ('research_project', await operation(store, 'claim_task', task_id='draft', task_revision=1))
+        return (
+            "research_project",
+            await operation(store, "claim_task", task_id="draft", task_revision=1),
+        )
 
     class ConflictModel(AlphaModel):
         async def child(self, request):
@@ -475,7 +501,7 @@ async def test_generic_conflict_candidates_bind_existing_evidence(lab):
 
     driver.stream_message = route
     bundle.engine.set_api_client(driver)
-    before = (await store.load())
+    before = await store.load()
     result = None
     stream = bundle.engine.submit_message("用通用委托整理现有证据中的冲突候选")
     try:
@@ -492,6 +518,6 @@ async def test_generic_conflict_candidates_bind_existing_evidence(lab):
     assert result and result["results"][0]["status"] == "completed"
     assert result["results"][0]["evidence_refs"] == child_model.checked(before)[:2]
     assert "冲突候选" in result["results"][0]["summary"]
-    after = (await store.load())
+    after = await store.load()
     assert before.conclusions == after.conclusions and before.conflicts == after.conflicts
     assert (await current_plan(store)).tasks[1].status == "in_progress"

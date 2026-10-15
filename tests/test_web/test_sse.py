@@ -34,29 +34,49 @@ def test_headers_unicode_order_and_ready_snapshot(workspace):
         assert len(restored.receive_json()["session"]["messages"]) == 2
 
 
+def test_reconnect_sends_active_request_before_replay(workspace):
+    client, app, _, _, _ = workspace
+    sid = add_session(client, add_model(client))
+    controller = SessionController(sid, app.state.workspace)
+    controller.request_id = "ongoing"
+    controller.accepting = True
+    controller.event_seq = 1
+    controller.event_log = [{
+        "type": "delta", "session_id": sid, "request_id": "ongoing",
+        "event_id": 1, "id": "draft", "text": "partial", "turn_id": "ongoing",
+    }]
+    app.state.workspace.active_runs[sid] = controller
+    with sse_connect(client, sid) as stream:
+        ready = stream.receive_json()
+        replay = stream.receive_json()
+        assert ready["type"] == "ready" and ready["request_id"] == "ongoing"
+        assert ready["running"] is True
+        assert replay["type"] == "delta" and replay["event_id"] == 1
+
+
 async def test_bounded_channel_backpressure_order_detach_and_heartbeat():
     channel = EventChannel(capacity=1, heartbeat_seconds=0.01)
     first = {"type": "message", "text": "中文\n下一行"}
     await channel.publish(first)
     first["text"] = "mutated"
-    blocked = asyncio.create_task(channel.publish({"type": "done"}))
-    await asyncio.sleep(0.01)
-    assert not blocked.done() and channel.queue.qsize() == 1
+    await channel.publish({"type": "done"})
+    assert channel.detached.is_set() and channel.queue.qsize() == 1
     frames = channel.stream()
     frame = await anext(frames)
     assert frame.endswith("\n\n") and "中文" in frame
     assert json.loads(frame[6:])["text"] == "中文\n下一行"
-    await asyncio.wait_for(blocked, 1)
-    assert json.loads((await anext(frames))[6:])["type"] == "done"
+    with pytest.raises(StopAsyncIteration):
+        await anext(frames)
+    channel = EventChannel(capacity=2, heartbeat_seconds=0.01)
+    frames = channel.stream()
     assert await anext(frames) == ": keep-alive\n\n"
     await frames.aclose()
     await channel.publish({"type": "prompt"})
-    blocked = asyncio.create_task(channel.publish({"type": "error"}))
-    await asyncio.sleep(0.01)
     channel.detach()
-    await asyncio.wait_for(blocked, 1)
+    await channel.publish({"type": "error"})
     assert channel.queue.qsize() == 1
     assert encode_event({"text": "你好"}) == 'data: {"text":"你好"}\n\n'
+    assert encode_event({"event_id": 7, "text": "你好"}) == 'id: 7\ndata: {"event_id":7,"text":"你好"}\n\n'
 
 
 def test_command_ownership_validation_duplicate_and_restart(workspace):
@@ -64,19 +84,33 @@ def test_command_ownership_validation_duplicate_and_restart(workspace):
     sid = add_session(client, add_model(client))
     endpoint = f"/api/sessions/{sid}/commands"
     payload = {"type": "submit", "request_id": "stable", "text": "hello"}
-    assert client.post(endpoint, json=payload).status_code == 409
+    accepted = client.post(endpoint, json=payload)
+    assert accepted.status_code == 202 and accepted.json()["accepted"] is True
+    for _ in range(100):
+        messages = client.get(f"/api/sessions/{sid}").json()["messages"]
+        if any(row.get("role") == "assistant" for row in messages):
+            break
+    else:
+        raise AssertionError("headless submit did not run")
     assert client.post("/api/sessions/missing/commands", json=payload).status_code == 404
     with sse_connect(client, sid) as stream:
         stream.receive_json()
-        assert client.post(endpoint, json=payload).status_code == 409
+        ambiguous = {"type": "submit", "request_id": "ambiguous", "text": "点评新闻和财报"}
+        rejected = stream.command(ambiguous)
+        assert rejected.status_code == 422
+        assert "发起人选择" in rejected.json()["detail"]
+        accepted = stream.command({**ambiguous, "research_type": "financial_commentary"})
+        assert accepted.status_code == 202
+        collect(stream)
+        duplicate = client.post(endpoint, json=payload)
+        assert duplicate.status_code == 202 and duplicate.json()["duplicate"] is True
         assert (
             stream.command({"type": "submit", "request_id": "bad", "text": ""}).status_code == 422
         )
         assert stream.command({"type": "unsupported", "request_id": "bad"}).status_code == 422
         assert stream.command(payload).status_code == 202
         assert stream.command(payload).json()["duplicate"] is True
-        collect(stream)
-        assert len(requests) == 1
+        assert len(requests) == 2
         assert stream.command({**payload, "text": "different"}).status_code == 409
         with pytest.raises(httpx.HTTPStatusError) as duplicate:
             with sse_connect(client, sid):
@@ -89,7 +123,7 @@ def test_command_ownership_validation_duplicate_and_restart(workspace):
         with sse_connect(restarted, sid) as stream:
             stream.receive_json()
             assert stream.command(payload).json()["duplicate"] is True
-            assert len(requests) == 1
+            assert len(requests) == 2
 
 
 def test_simultaneous_duplicate_commands_claim_one_execution(workspace):
@@ -138,7 +172,9 @@ def test_stale_prompt_parallel_submit_and_disconnect(workspace):
         )
         assert stream.command({"type": "cancel", "request_id": "stale"}).status_code == 409
     assert not app.state.workspace.connections and not app.state.workspace.lock.locked()
-    assert app.state.workspace.execution_owner is None and all(client.closed for client in clients)
+    live = app.state.workspace.active_runs.get(sid)
+    assert live is not None and live.busy
+    assert not all(client.closed for client in clients)
 
 
 def test_disconnect_during_steer_never_starts_orphan(workspace, monkeypatch):
@@ -168,11 +204,20 @@ def test_disconnect_during_steer_never_starts_orphan(workspace, monkeypatch):
         assert stream.command(payload).json()["duplicate"] is True
         collect(stream, "steer_accepted")
         client.portal.call(cancellation_started.wait)
-        # Signal disconnect before allowing cancellation to settle.
+        # Disconnect removes the subscription. Releasing cancellation still starts one successor.
         client.portal.call(stream.closed.set)
         client.portal.call(release.set)
-    assert len(requests) == 1
-    assert not app.state.workspace.connections and app.state.workspace.execution_owner is None
+        for _ in range(50):
+            saved = client.get(f"/api/sessions/{sid}").json()["messages"]
+            if len(requests) >= 2 and not any(
+                row.get("turn_status") == "running" for row in saved
+            ):
+                break
+            client.portal.call(asyncio.sleep, 0.05)
+        else:
+            raise AssertionError("steer during disconnect did not settle one successor")
+    assert len(requests) == 2
+    assert not app.state.workspace.connections
     assert not app.state.workspace.lock.locked()
     saved = client.get(f"/api/sessions/{sid}").json()["messages"]
     assert any(row["text"] == "部分回复" for row in saved)
@@ -206,21 +251,16 @@ async def test_asgi_send_failure_always_detaches_response():
 def test_accepted_steer_storage_error_stops_old_run_and_reports_failure(workspace, monkeypatch):
     client, app, requests, _, _ = workspace
     sid = add_session(client, add_model(client))
-    original_write = app.state.workspace.store.write
-    failed = False
+    from researchx.state.store import ResearchStore
 
-    def fail_once(record):
-        nonlocal failed
-        if not failed:
-            failed = True
-            raise OSError("simulated projection write failure")
-        return original_write(record)
+    async def fail_replan(self, request_id):
+        raise OSError("simulated replan write failure")
 
     with sse_connect(client, sid) as stream:
         stream.receive_json()
         submit(stream, "slow", request_id="old")
         collect(stream, "delta")
-        monkeypatch.setattr(app.state.workspace.store, "write", fail_once)
+        monkeypatch.setattr(ResearchStore, "require_replan", fail_replan)
         assert (
             stream.command(
                 {
@@ -245,3 +285,21 @@ def test_accepted_steer_storage_error_stops_old_run_and_reports_failure(workspac
         assert not any(
             row.get("turn_status") == "running" for row in events[-1]["session"]["messages"]
         )
+
+
+async def test_failed_control_still_releases_owner_on_close(tmp_path):
+    from researchx.web.workspace import WebWorkspace
+
+    workspace = WebWorkspace(str(tmp_path))
+    controller = SessionController("a" * 12, workspace)
+    workspace.execution_owner = controller.connection_id
+    controller.stopping = True
+
+    async def failed_control():
+        await asyncio.sleep(0)
+        raise RuntimeError("control failed")
+
+    controller.control_task = asyncio.create_task(failed_control())
+    with pytest.raises(RuntimeError, match="control failed"):
+        await controller.close()
+    assert workspace.execution_owner is None and controller.closed

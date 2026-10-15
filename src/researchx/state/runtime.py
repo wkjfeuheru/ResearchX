@@ -3,7 +3,7 @@
 from __future__ import annotations
 from typing import AsyncIterator
 from researchx.state.store import ResearchStore
-from researchx.state.models import ResearchProject, ResearchObjective
+from researchx.state.models import ResearchProject, ResearchObjective, ResearchMemory
 from researchx.permissions.checker import PermissionChecker
 from typing import TYPE_CHECKING
 
@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 import json
 import hashlib
 import re
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -93,6 +94,94 @@ class ResearchAgentRuntime:
         ):
             raise ResearchError("Invalid or symlinked research workspace binding")
         return path
+
+    @staticmethod
+    def dispatch_scope(memory: ResearchMemory) -> dict[str, object]:
+        state = memory.research_state
+        plan = memory.plans.get(state.current_plan_id or "")
+        task = (
+            next((item for item in plan.tasks if item.id == state.current_task_id), None)
+            if plan
+            else None
+        )
+        if (
+            not plan
+            or plan.archived
+            or state.replan_required
+            or not task
+            or task.status != "in_progress"
+        ):
+            raise ResearchError("Claim an active research task before dispatching")
+        project = memory.project
+        if project and project.status != "running":
+            raise ResearchError("Project is not running")
+        return {
+            "context_id": memory.current_context_id,
+            "plan_id": plan.id,
+            "task_id": task.id,
+            "task_revision": task.task_revision,
+            "lease_id": task.lease_id,
+            "project_id": project.id if project else None,
+            "baseline": (project.execution_epoch, project.objective_revision, project.plan_revision)
+            if project
+            else (),
+        }
+
+    async def prepare_dispatch_scope(self) -> dict[str, object]:
+        async with self.store.transaction():
+            memory = await self.store._load()
+            scope = self.dispatch_scope(memory)
+            if scope["lease_id"] is None:
+                from researchx.state.models import new_id
+
+                task = next(
+                    item
+                    for item in memory.plans[str(scope["plan_id"])].tasks
+                    if item.id == scope["task_id"]
+                )
+                task.lease_id = new_id("lease")
+                await self.store._save(memory, "dispatch_lease", {"task_id": task.id})
+                scope = self.dispatch_scope(memory)
+            return scope
+
+    async def validate_dispatch_scope(self, scope: Mapping[str, object]) -> None:
+        try:
+            current = self.dispatch_scope(await self.store.load())
+        except ResearchError:
+            raise ResearchError("Subagent belongs to a revoked parent scope") from None
+        expected = dict(scope)
+        baseline = expected.get("baseline")
+        if isinstance(baseline, list):
+            expected["baseline"] = tuple(baseline)
+        if current != expected:
+            raise ResearchError("Subagent belongs to a revoked parent scope")
+
+    async def resolve_dispatch_workspace(self) -> Path:
+        memory = await self.store.load()
+        if memory.project:
+            return await self.resolve_workspace(memory.project.id)
+        from researchx.storage.filesystem import private_directory
+
+        root = self.store.directory / "delegation_workspace"
+        self._check_path(self.store.directory, root)
+        return private_directory(root)
+
+    @asynccontextmanager
+    async def dispatch_file_lock(
+        self, scope: Mapping[str, object], candidate: Path, *, write: bool
+    ) -> AsyncIterator[Path]:
+        root = await self.resolve_dispatch_workspace()
+        path = self._check_path(root, candidate)
+        key = hashlib.sha256(str(path).encode()).hexdigest()
+        async with async_exclusive_file_lock(
+            self.store.directory / "workspace_locks" / f"{key}.lock"
+        ):
+            if write:
+                async with self.store.transaction():
+                    await self.validate_dispatch_scope(scope)
+                    yield self._check_path(root, path)
+            else:
+                yield self._check_path(root, path)
 
     async def resolve_workspace(self, project_id: str) -> Path:
         """Resolve only the current persisted project, never a model-supplied directory."""

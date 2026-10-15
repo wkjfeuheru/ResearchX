@@ -5,6 +5,7 @@ from researchx.services.context.sources import ContextSnapshot
 from researchx.state.store import ResearchStore
 
 import asyncio
+import json
 import re
 from pathlib import Path
 from uuid import uuid4
@@ -26,7 +27,7 @@ from researchx.engine.messages import (
     ContextSpan,
 )
 from researchx.engine.query import AskUserPrompt, PermissionPrompt, QueryContext, run_query
-from researchx.engine.stream_events import AssistantTurnComplete, StreamEvent
+from researchx.engine.stream_events import AssistantTurnComplete, StreamEvent, ErrorEvent
 from researchx.config.settings import Settings
 from researchx.hooks import HookEvent, HookExecutor
 from researchx.permissions.checker import PermissionChecker
@@ -260,7 +261,9 @@ class QueryEngine:
             if self._settings
             else ContextComponentsSettings(),
             legacy_budget=int(self._tool_metadata.get("research_injection_budget", 6000)),
-            enabled=self._settings.research_memory.enabled if self._settings else True,
+            enabled=self._settings.research.context.auto_inject if self._settings else True,
+            auto_summary_max_tokens=int(self._tool_metadata.get("auto_summary_max_tokens", 1500)),
+            auto_index_max_items=int(self._tool_metadata.get("auto_index_max_items", 12)),
         )
 
     def restore_usage(self, usage: dict[str, object] | UsageSnapshot | None) -> None:
@@ -333,9 +336,31 @@ class QueryEngine:
             if isinstance(prompt, ConversationMessage)
             else ConversationMessage.from_user_text(prompt)
         )
+        message_id = self._tool_metadata.get("current_user_message_id")
+        if message_id:
+            user_message = user_message.model_copy(update={"message_id": message_id})
         store = self._tool_metadata.get("research_store")
         if store is not None and user_message.text.strip():
             from researchx.state.models import new_id
+            from researchx.research_application import ResearchApplication
+
+            selected = self._tool_metadata.pop("business_profile", None)
+            self._tool_metadata.pop("current_business_profile", None)
+            admission = await ResearchApplication(store).prepare_user_turn(
+                user_message.text,
+                selected,
+                self._ask_user_prompt,
+            )
+            if not admission.allowed:
+                yield ErrorEvent(message=admission.message)
+                return
+            if admission.profile:
+                self._tool_metadata["current_business_profile"] = admission.profile
+            window = json.loads(admission.message)
+            self._tool_metadata["business_window"] = {
+                "start": window["window_start"],
+                "end": window["as_of"],
+            }
 
             origin = user_message.message_id or new_id("msg")
             user_message = user_message.model_copy(update={"message_id": origin})
@@ -345,6 +370,11 @@ class QueryEngine:
                 kind="user",
                 title="用户提供资料",
                 locator=f"message:{origin}",
+                request_profile=(
+                    selected
+                    if selected in {"event_commentary", "financial_commentary"}
+                    else None
+                ),
             )
             self._tool_metadata["latest_user_source_id"] = source.id
         # Retain the submitted prompt even if its recall is cancelled before the model starts.
@@ -361,8 +391,6 @@ class QueryEngine:
         try:
             snapshot = await self._current_runtime_snapshot()
         except ValueError as exc:
-            from researchx.engine.stream_events import ErrorEvent
-
             yield ErrorEvent(message=str(exc))
             return
         user_message = user_message.model_copy(
@@ -411,7 +439,7 @@ class QueryEngine:
             runtime_snapshot_provider=self._current_runtime_snapshot,
             context_components=self._settings.context_components if self._settings else None,
             current_user_message_id=user_message.message_id,
-            research_memory_enabled=self._settings.research_memory.enabled
+            research_memory_enabled=self._settings.research.context.auto_inject
             if self._settings
             else True,
         )
@@ -436,7 +464,52 @@ class QueryEngine:
 
                         warning = await store.completion_warning()
                         text = event.message.text + (f"\n\n{warning}" if warning else "")
+                        from researchx.state.deliveries import DeliveryService
+
+                        user_request = next(
+                            (
+                                item.text
+                                for item in reversed(query_messages)
+                                if item.role == "user"
+                                and item.text
+                                and item.context_origin in {"user_input", None}
+                            ),
+                            "",
+                        )
+                        from researchx.state.business_coverage import answer_profiles, evaluate_coverage
+
+                        profile, freeze_profile = answer_profiles(
+                            user_request, self._tool_metadata.get("current_business_profile")
+                        )
+                        if profile is not None:
+                            from researchx.state.store import CITATION_PATTERN
+
+                            memory = await store.load()
+                            cited = set(CITATION_PATTERN.findall(text))
+                            coverage = evaluate_coverage(
+                                memory.model_copy(
+                                    update={
+                                        "evidence_pool": {
+                                            key: value
+                                            for key, value in memory.evidence_pool.items()
+                                            if key in cited
+                                        }
+                                    }
+                                ),
+                                profile,
+                                user_request,
+                            )
+                            text = "【内部研究草稿 · 未经人工复核】\n\n" + text
+                            if coverage.gaps:
+                                text += "\n\n资料覆盖缺口：\n" + "\n".join(
+                                    f"- {gap}" for gap in coverage.gaps
+                                )
                         rendered, answer = await store.render_answer(text, new_id("answer"))
+                        await DeliveryService(store).freeze_answer(
+                            str(answer["answer_id"]),
+                            user_request,
+                            profile=freeze_profile,
+                        )
                         updated = event.message.model_copy(
                             update={
                                 "content": [TextBlock(text=rendered)],
@@ -559,7 +632,7 @@ class QueryEngine:
             runtime_context_provider=self._current_runtime_context,
             runtime_snapshot_provider=self._current_runtime_snapshot,
             context_components=self._settings.context_components if self._settings else None,
-            research_memory_enabled=self._settings.research_memory.enabled
+            research_memory_enabled=self._settings.research.context.auto_inject
             if self._settings
             else True,
         )

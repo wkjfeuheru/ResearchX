@@ -61,11 +61,26 @@ class ReportContext:
                 "Registered reports require export_registered() with a PostgreSQL research store"
             )
         for ref in self.references:
-            if os.environ.get("RESEARCHX_ISOLATED_EXPORT"):
+            if os.environ.get("RESEARCHX_ISOLATED_EXPORT") or not self.memory:
                 continue  # Candidate IDs are verified by the main agent on the host.
+            from researchx.state.models import SourceUsage
+            from researchx.state.source_policy import may_export
+
             for key, pool in (("source_id", "sources"), ("evidence_id", "evidence_pool")):
                 if ref.get(key) and ref[key] not in self.memory.get(pool, {}):
                     raise ValueError(f"{ref[key]}不属于当前会话；导入资料须重新登记来源/证据")
+            source_id = ref.get("source_id")
+            evidence_id = ref.get("evidence_id")
+            if not source_id and not evidence_id:
+                raise ValueError("已登记报告的每项引用须绑定来源或证据 ID")
+            if evidence_id and not source_id:
+                evidence = self.memory.get("evidence_pool", {}).get(evidence_id)
+                source_id = evidence.get("source_id") if evidence else None
+            source = self.memory.get("sources", {}).get(source_id)
+            if source is None or not may_export(
+                SourceUsage.model_validate(source.get("usage", {}))
+            ):
+                raise ValueError("来源授权不足，不能导出报告")
             if ref.get("source_id") and ref.get("evidence_id"):
                 if (
                     self.memory["evidence_pool"][ref["evidence_id"]]["source_id"]
@@ -77,12 +92,17 @@ class ReportContext:
         return " ".join(f"[R{self.references.index(ref) + 1}]" for ref in items)
 
     def claim(self, item: dict[str, Any]) -> str:
-        return str(item["text"]) + " " + self.refs(item["references"])
+        labels = {"fact": "事实", "inference": "推断", "forecast": "预测", "unclassified": "未分类"}
+        return (
+            f"【{labels.get(item.get('kind', 'unclassified'), '未分类')}】{item['text']} "
+            + self.refs(item["references"])
+        )
 
     def header(self, title: str) -> list[str]:
         data = self.data
         return [
             f"# {title}：{data['company']['name']}（{data['company']['code']}）",
+            "内部研究草稿 · 未经人工复核，不代表正式发布意见。",
             f"状态：{data['status']}；资料截止：{data['as_of']}",
             "",
         ]
@@ -248,15 +268,27 @@ async def export_registered(
         finally:
             _export_memory.reset(token)
         artifacts = []
+        from researchx.state.deliveries import DeliveryService
+
+        references = list(collect_references(result.model_dump(mode="json")))
+        evidence_ids = sorted(
+            {str(ref["evidence_id"]) for ref in references if ref.get("evidence_id")}
+        )
+        source_ids = sorted({str(ref["source_id"]) for ref in references if ref.get("source_id")})
         for path in cast(list[str], output["files"]):
-            artifacts.append(
-                await SessionFiles(store).register(
-                    Path(path),
-                    task_id=task_id,
-                    status=str(output["status"]),
-                    kind=str(result.model_dump()["kind"]),
-                    execution=execution,
-                )
+            artifact = await SessionFiles(store).register(
+                Path(path),
+                task_id=task_id,
+                status=str(output["status"]),
+                kind=str(result.model_dump()["kind"]),
+                execution=execution,
+            )
+            artifacts.append(artifact)
+            await DeliveryService(store).freeze_file(
+                artifact["id"],
+                Path(path).read_bytes(),
+                evidence_ids=evidence_ids,
+                source_ids=source_ids,
             )
         output["artifacts"] = artifacts
         return output

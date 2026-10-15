@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "company": {
     "name": "样例制造",
     "code": "603999",
@@ -36,9 +36,25 @@
             {
               "locator": "fixture:annual-report.pdf#page=1",
               "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-              "page": 1
+              "page": 1,
+              "evidence_id": "ev_cash"
             }
-          ]
+          ],
+          "fact_basis": {
+            "security_code": "603999",
+            "market": "SSE",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "period_type": "annual",
+            "scope": "consolidated",
+            "currency": "CNY",
+            "unit": "万元",
+            "adjustment": "as_reported",
+            "value_kind": "actual",
+            "as_of": "2026-10-05T12:00:00+08:00",
+            "published_at": "2026-03-01T00:00:00+08:00",
+            "metric_id": "cash"
+          }
         },
         "receivables": {
           "value": "20",
@@ -47,9 +63,25 @@
             {
               "locator": "fixture:annual-report.pdf#page=1",
               "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-              "page": 1
+              "page": 1,
+              "evidence_id": "ev_receivables"
             }
-          ]
+          ],
+          "fact_basis": {
+            "security_code": "603999",
+            "market": "SSE",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "period_type": "annual",
+            "scope": "consolidated",
+            "currency": "CNY",
+            "unit": "万元",
+            "adjustment": "as_reported",
+            "value_kind": "actual",
+            "as_of": "2026-10-05T12:00:00+08:00",
+            "published_at": "2026-03-01T00:00:00+08:00",
+            "metric_id": "receivables"
+          }
         },
         "inventory": {
           "value": "10",
@@ -58,9 +90,25 @@
             {
               "locator": "fixture:annual-report.pdf#page=1",
               "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-              "page": 1
+              "page": 1,
+              "evidence_id": "ev_inventory"
             }
-          ]
+          ],
+          "fact_basis": {
+            "security_code": "603999",
+            "market": "SSE",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "period_type": "annual",
+            "scope": "consolidated",
+            "currency": "CNY",
+            "unit": "万元",
+            "adjustment": "as_reported",
+            "value_kind": "actual",
+            "as_of": "2026-10-05T12:00:00+08:00",
+            "published_at": "2026-03-01T00:00:00+08:00",
+            "metric_id": "inventory"
+          }
         },
         "current_assets": {
           "value": "80",
@@ -69,9 +117,25 @@
             {
               "locator": "fixture:annual-report.pdf#page=1",
               "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-              "page": 1
+              "page": 1,
+              "evidence_id": "ev_current_assets"
             }
-          ]
+          ],
+          "fact_basis": {
+            "security_code": "603999",
+            "market": "SSE",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "period_type": "annual",
+            "scope": "consolidated",
+            "currency": "CNY",
+            "unit": "万元",
+            "adjustment": "as_reported",
+            "value_kind": "actual",
+            "as_of": "2026-10-05T12:00:00+08:00",
+            "published_at": "2026-03-01T00:00:00+08:00",
+            "metric_id": "current_assets"
+          }
         },
         "total_assets": {
           "value": "200",
@@ -80,9 +144,25 @@
             {
               "locator": "fixture:annual-report.pdf#page=1",
               "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-              "page": 1
+              "page": 1,
+              "evidence_id": "ev_total_assets"
             }
-          ]
+          ],
+          "fact_basis": {
+            "security_code": "603999",
+            "market": "SSE",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "period_type": "annual",
+            "scope": "consolidated",
+            "currency": "CNY",
+            "unit": "万元",
+            "adjustment": "as_reported",
+            "value_kind": "actual",
+            "as_of": "2026-10-05T12:00:00+08:00",
+            "published_at": "2026-03-01T00:00:00+08:00",
+            "metric_id": "total_assets"
+          }
         },
         "current_liabilities": {
           "value": "40",
@@ -91,9 +171,25 @@
             {
               "locator": "fixture:annual-report.pdf#page=1",
               "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-              "page": 1
+              "page": 1,
+              "evidence_id": "ev_current_liabilities"
             }
-          ]
+          ],
+          "fact_basis": {
+            "security_code": "603999",
+            "market": "SSE",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "period_type": "annual",
+            "scope": "consolidated",
+            "currency": "CNY",
+            "unit": "万元",
+            "adjustment": "as_reported",
+            "value_kind": "actual",
+            "as_of": "2026-10-05T12:00:00+08:00",
+            "published_at": "2026-03-01T00:00:00+08:00",
+            "metric_id": "current_liabilities"
+          }
         },
         "total_liabilities": {
           "value": "80",
@@ -102,9 +198,25 @@
             {
               "locator": "fixture:annual-report.pdf#page=1",
               "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-              "page": 1
+              "page": 1,
+              "evidence_id": "ev_total_liabilities"
             }
-          ]
+          ],
+          "fact_basis": {
+            "security_code": "603999",
+            "market": "SSE",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "period_type": "annual",
+            "scope": "consolidated",
+            "currency": "CNY",
+            "unit": "万元",
+            "adjustment": "as_reported",
+            "value_kind": "actual",
+            "as_of": "2026-10-05T12:00:00+08:00",
+            "published_at": "2026-03-01T00:00:00+08:00",
+            "metric_id": "total_liabilities"
+          }
         },
         "total_equity": {
           "value": "120",
@@ -113,9 +225,25 @@
             {
               "locator": "fixture:annual-report.pdf#page=1",
               "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-              "page": 1
+              "page": 1,
+              "evidence_id": "ev_total_equity"
             }
-          ]
+          ],
+          "fact_basis": {
+            "security_code": "603999",
+            "market": "SSE",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "period_type": "annual",
+            "scope": "consolidated",
+            "currency": "CNY",
+            "unit": "万元",
+            "adjustment": "as_reported",
+            "value_kind": "actual",
+            "as_of": "2026-10-05T12:00:00+08:00",
+            "published_at": "2026-03-01T00:00:00+08:00",
+            "metric_id": "total_equity"
+          }
         },
         "parent_equity": {
           "value": "100",
@@ -124,9 +252,25 @@
             {
               "locator": "fixture:annual-report.pdf#page=1",
               "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-              "page": 1
+              "page": 1,
+              "evidence_id": "ev_parent_equity"
             }
-          ]
+          ],
+          "fact_basis": {
+            "security_code": "603999",
+            "market": "SSE",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "period_type": "annual",
+            "scope": "consolidated",
+            "currency": "CNY",
+            "unit": "万元",
+            "adjustment": "as_reported",
+            "value_kind": "actual",
+            "as_of": "2026-10-05T12:00:00+08:00",
+            "published_at": "2026-03-01T00:00:00+08:00",
+            "metric_id": "parent_equity"
+          }
         },
         "opening_parent_equity": {
           "value": "90",
@@ -135,9 +279,25 @@
             {
               "locator": "fixture:annual-report.pdf#page=1",
               "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-              "page": 1
+              "page": 1,
+              "evidence_id": "ev_opening_parent_equity"
             }
-          ]
+          ],
+          "fact_basis": {
+            "security_code": "603999",
+            "market": "SSE",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "period_type": "annual",
+            "scope": "consolidated",
+            "currency": "CNY",
+            "unit": "万元",
+            "adjustment": "as_reported",
+            "value_kind": "actual",
+            "as_of": "2026-10-05T12:00:00+08:00",
+            "published_at": "2026-03-01T00:00:00+08:00",
+            "metric_id": "opening_parent_equity"
+          }
         },
         "revenue": {
           "value": "100",
@@ -146,9 +306,25 @@
             {
               "locator": "fixture:annual-report.pdf#page=1",
               "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-              "page": 1
+              "page": 1,
+              "evidence_id": "ev_revenue"
             }
-          ]
+          ],
+          "fact_basis": {
+            "security_code": "603999",
+            "market": "SSE",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "period_type": "annual",
+            "scope": "consolidated",
+            "currency": "CNY",
+            "unit": "万元",
+            "adjustment": "as_reported",
+            "value_kind": "actual",
+            "as_of": "2026-10-05T12:00:00+08:00",
+            "published_at": "2026-03-01T00:00:00+08:00",
+            "metric_id": "revenue"
+          }
         },
         "cost": {
           "value": "60",
@@ -157,9 +333,25 @@
             {
               "locator": "fixture:annual-report.pdf#page=1",
               "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-              "page": 1
+              "page": 1,
+              "evidence_id": "ev_cost"
             }
-          ]
+          ],
+          "fact_basis": {
+            "security_code": "603999",
+            "market": "SSE",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "period_type": "annual",
+            "scope": "consolidated",
+            "currency": "CNY",
+            "unit": "万元",
+            "adjustment": "as_reported",
+            "value_kind": "actual",
+            "as_of": "2026-10-05T12:00:00+08:00",
+            "published_at": "2026-03-01T00:00:00+08:00",
+            "metric_id": "cost"
+          }
         },
         "tax_surcharges": {
           "value": "2",
@@ -168,9 +360,25 @@
             {
               "locator": "fixture:annual-report.pdf#page=1",
               "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-              "page": 1
+              "page": 1,
+              "evidence_id": "ev_tax_surcharges"
             }
-          ]
+          ],
+          "fact_basis": {
+            "security_code": "603999",
+            "market": "SSE",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "period_type": "annual",
+            "scope": "consolidated",
+            "currency": "CNY",
+            "unit": "万元",
+            "adjustment": "as_reported",
+            "value_kind": "actual",
+            "as_of": "2026-10-05T12:00:00+08:00",
+            "published_at": "2026-03-01T00:00:00+08:00",
+            "metric_id": "tax_surcharges"
+          }
         },
         "selling_expense": {
           "value": "5",
@@ -179,9 +387,25 @@
             {
               "locator": "fixture:annual-report.pdf#page=1",
               "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-              "page": 1
+              "page": 1,
+              "evidence_id": "ev_selling_expense"
             }
-          ]
+          ],
+          "fact_basis": {
+            "security_code": "603999",
+            "market": "SSE",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "period_type": "annual",
+            "scope": "consolidated",
+            "currency": "CNY",
+            "unit": "万元",
+            "adjustment": "as_reported",
+            "value_kind": "actual",
+            "as_of": "2026-10-05T12:00:00+08:00",
+            "published_at": "2026-03-01T00:00:00+08:00",
+            "metric_id": "selling_expense"
+          }
         },
         "admin_expense": {
           "value": "4",
@@ -190,9 +414,25 @@
             {
               "locator": "fixture:annual-report.pdf#page=1",
               "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-              "page": 1
+              "page": 1,
+              "evidence_id": "ev_admin_expense"
             }
-          ]
+          ],
+          "fact_basis": {
+            "security_code": "603999",
+            "market": "SSE",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "period_type": "annual",
+            "scope": "consolidated",
+            "currency": "CNY",
+            "unit": "万元",
+            "adjustment": "as_reported",
+            "value_kind": "actual",
+            "as_of": "2026-10-05T12:00:00+08:00",
+            "published_at": "2026-03-01T00:00:00+08:00",
+            "metric_id": "admin_expense"
+          }
         },
         "rd_expense": {
           "value": "3",
@@ -201,9 +441,25 @@
             {
               "locator": "fixture:annual-report.pdf#page=1",
               "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-              "page": 1
+              "page": 1,
+              "evidence_id": "ev_rd_expense"
             }
-          ]
+          ],
+          "fact_basis": {
+            "security_code": "603999",
+            "market": "SSE",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "period_type": "annual",
+            "scope": "consolidated",
+            "currency": "CNY",
+            "unit": "万元",
+            "adjustment": "as_reported",
+            "value_kind": "actual",
+            "as_of": "2026-10-05T12:00:00+08:00",
+            "published_at": "2026-03-01T00:00:00+08:00",
+            "metric_id": "rd_expense"
+          }
         },
         "finance_expense": {
           "value": "1",
@@ -212,9 +468,25 @@
             {
               "locator": "fixture:annual-report.pdf#page=1",
               "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-              "page": 1
+              "page": 1,
+              "evidence_id": "ev_finance_expense"
             }
-          ]
+          ],
+          "fact_basis": {
+            "security_code": "603999",
+            "market": "SSE",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "period_type": "annual",
+            "scope": "consolidated",
+            "currency": "CNY",
+            "unit": "万元",
+            "adjustment": "as_reported",
+            "value_kind": "actual",
+            "as_of": "2026-10-05T12:00:00+08:00",
+            "published_at": "2026-03-01T00:00:00+08:00",
+            "metric_id": "finance_expense"
+          }
         },
         "other_operating_net": {
           "value": "1",
@@ -223,9 +495,25 @@
             {
               "locator": "fixture:annual-report.pdf#page=1",
               "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-              "page": 1
+              "page": 1,
+              "evidence_id": "ev_other_operating_net"
             }
-          ]
+          ],
+          "fact_basis": {
+            "security_code": "603999",
+            "market": "SSE",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "period_type": "annual",
+            "scope": "consolidated",
+            "currency": "CNY",
+            "unit": "万元",
+            "adjustment": "as_reported",
+            "value_kind": "actual",
+            "as_of": "2026-10-05T12:00:00+08:00",
+            "published_at": "2026-03-01T00:00:00+08:00",
+            "metric_id": "other_operating_net"
+          }
         },
         "operating_profit": {
           "value": "26",
@@ -234,9 +522,25 @@
             {
               "locator": "fixture:annual-report.pdf#page=1",
               "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-              "page": 1
+              "page": 1,
+              "evidence_id": "ev_operating_profit"
             }
-          ]
+          ],
+          "fact_basis": {
+            "security_code": "603999",
+            "market": "SSE",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "period_type": "annual",
+            "scope": "consolidated",
+            "currency": "CNY",
+            "unit": "万元",
+            "adjustment": "as_reported",
+            "value_kind": "actual",
+            "as_of": "2026-10-05T12:00:00+08:00",
+            "published_at": "2026-03-01T00:00:00+08:00",
+            "metric_id": "operating_profit"
+          }
         },
         "non_operating_net": {
           "value": "2",
@@ -245,9 +549,25 @@
             {
               "locator": "fixture:annual-report.pdf#page=2",
               "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-              "page": 2
+              "page": 2,
+              "evidence_id": "ev_non_operating_net"
             }
-          ]
+          ],
+          "fact_basis": {
+            "security_code": "603999",
+            "market": "SSE",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "period_type": "annual",
+            "scope": "consolidated",
+            "currency": "CNY",
+            "unit": "万元",
+            "adjustment": "as_reported",
+            "value_kind": "actual",
+            "as_of": "2026-10-05T12:00:00+08:00",
+            "published_at": "2026-03-01T00:00:00+08:00",
+            "metric_id": "non_operating_net"
+          }
         },
         "pretax_profit": {
           "value": "28",
@@ -256,9 +576,25 @@
             {
               "locator": "fixture:annual-report.pdf#page=2",
               "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-              "page": 2
+              "page": 2,
+              "evidence_id": "ev_pretax_profit"
             }
-          ]
+          ],
+          "fact_basis": {
+            "security_code": "603999",
+            "market": "SSE",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "period_type": "annual",
+            "scope": "consolidated",
+            "currency": "CNY",
+            "unit": "万元",
+            "adjustment": "as_reported",
+            "value_kind": "actual",
+            "as_of": "2026-10-05T12:00:00+08:00",
+            "published_at": "2026-03-01T00:00:00+08:00",
+            "metric_id": "pretax_profit"
+          }
         },
         "income_tax": {
           "value": "7",
@@ -267,9 +603,25 @@
             {
               "locator": "fixture:annual-report.pdf#page=2",
               "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-              "page": 2
+              "page": 2,
+              "evidence_id": "ev_income_tax"
             }
-          ]
+          ],
+          "fact_basis": {
+            "security_code": "603999",
+            "market": "SSE",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "period_type": "annual",
+            "scope": "consolidated",
+            "currency": "CNY",
+            "unit": "万元",
+            "adjustment": "as_reported",
+            "value_kind": "actual",
+            "as_of": "2026-10-05T12:00:00+08:00",
+            "published_at": "2026-03-01T00:00:00+08:00",
+            "metric_id": "income_tax"
+          }
         },
         "net_profit": {
           "value": "21",
@@ -278,9 +630,25 @@
             {
               "locator": "fixture:annual-report.pdf#page=2",
               "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-              "page": 2
+              "page": 2,
+              "evidence_id": "ev_net_profit"
             }
-          ]
+          ],
+          "fact_basis": {
+            "security_code": "603999",
+            "market": "SSE",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "period_type": "annual",
+            "scope": "consolidated",
+            "currency": "CNY",
+            "unit": "万元",
+            "adjustment": "as_reported",
+            "value_kind": "actual",
+            "as_of": "2026-10-05T12:00:00+08:00",
+            "published_at": "2026-03-01T00:00:00+08:00",
+            "metric_id": "net_profit"
+          }
         },
         "parent_net_profit": {
           "value": "20",
@@ -289,9 +657,25 @@
             {
               "locator": "fixture:annual-report.pdf#page=2",
               "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-              "page": 2
+              "page": 2,
+              "evidence_id": "ev_parent_net_profit"
             }
-          ]
+          ],
+          "fact_basis": {
+            "security_code": "603999",
+            "market": "SSE",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "period_type": "annual",
+            "scope": "consolidated",
+            "currency": "CNY",
+            "unit": "万元",
+            "adjustment": "as_reported",
+            "value_kind": "actual",
+            "as_of": "2026-10-05T12:00:00+08:00",
+            "published_at": "2026-03-01T00:00:00+08:00",
+            "metric_id": "parent_net_profit"
+          }
         },
         "minority_profit": {
           "value": "1",
@@ -300,9 +684,25 @@
             {
               "locator": "fixture:annual-report.pdf#page=2",
               "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-              "page": 2
+              "page": 2,
+              "evidence_id": "ev_minority_profit"
             }
-          ]
+          ],
+          "fact_basis": {
+            "security_code": "603999",
+            "market": "SSE",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "period_type": "annual",
+            "scope": "consolidated",
+            "currency": "CNY",
+            "unit": "万元",
+            "adjustment": "as_reported",
+            "value_kind": "actual",
+            "as_of": "2026-10-05T12:00:00+08:00",
+            "published_at": "2026-03-01T00:00:00+08:00",
+            "metric_id": "minority_profit"
+          }
         },
         "adjusted_parent_profit": {
           "value": "18",
@@ -311,9 +711,25 @@
             {
               "locator": "fixture:annual-report.pdf#page=2",
               "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-              "page": 2
+              "page": 2,
+              "evidence_id": "ev_adjusted_parent_profit"
             }
-          ]
+          ],
+          "fact_basis": {
+            "security_code": "603999",
+            "market": "SSE",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "period_type": "annual",
+            "scope": "consolidated",
+            "currency": "CNY",
+            "unit": "万元",
+            "adjustment": "as_reported",
+            "value_kind": "actual",
+            "as_of": "2026-10-05T12:00:00+08:00",
+            "published_at": "2026-03-01T00:00:00+08:00",
+            "metric_id": "adjusted_parent_profit"
+          }
         },
         "operating_cashflow": {
           "value": "25",
@@ -322,9 +738,25 @@
             {
               "locator": "fixture:annual-report.pdf#page=2",
               "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-              "page": 2
+              "page": 2,
+              "evidence_id": "ev_operating_cashflow"
             }
-          ]
+          ],
+          "fact_basis": {
+            "security_code": "603999",
+            "market": "SSE",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "period_type": "annual",
+            "scope": "consolidated",
+            "currency": "CNY",
+            "unit": "万元",
+            "adjustment": "as_reported",
+            "value_kind": "actual",
+            "as_of": "2026-10-05T12:00:00+08:00",
+            "published_at": "2026-03-01T00:00:00+08:00",
+            "metric_id": "operating_cashflow"
+          }
         },
         "investing_cashflow": {
           "value": "-10",
@@ -333,9 +765,25 @@
             {
               "locator": "fixture:annual-report.pdf#page=2",
               "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-              "page": 2
+              "page": 2,
+              "evidence_id": "ev_investing_cashflow"
             }
-          ]
+          ],
+          "fact_basis": {
+            "security_code": "603999",
+            "market": "SSE",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "period_type": "annual",
+            "scope": "consolidated",
+            "currency": "CNY",
+            "unit": "万元",
+            "adjustment": "as_reported",
+            "value_kind": "actual",
+            "as_of": "2026-10-05T12:00:00+08:00",
+            "published_at": "2026-03-01T00:00:00+08:00",
+            "metric_id": "investing_cashflow"
+          }
         },
         "financing_cashflow": {
           "value": "-8",
@@ -344,9 +792,25 @@
             {
               "locator": "fixture:annual-report.pdf#page=2",
               "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-              "page": 2
+              "page": 2,
+              "evidence_id": "ev_financing_cashflow"
             }
-          ]
+          ],
+          "fact_basis": {
+            "security_code": "603999",
+            "market": "SSE",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "period_type": "annual",
+            "scope": "consolidated",
+            "currency": "CNY",
+            "unit": "万元",
+            "adjustment": "as_reported",
+            "value_kind": "actual",
+            "as_of": "2026-10-05T12:00:00+08:00",
+            "published_at": "2026-03-01T00:00:00+08:00",
+            "metric_id": "financing_cashflow"
+          }
         },
         "fx_cash_effect": {
           "value": "1",
@@ -355,9 +819,25 @@
             {
               "locator": "fixture:annual-report.pdf#page=2",
               "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-              "page": 2
+              "page": 2,
+              "evidence_id": "ev_fx_cash_effect"
             }
-          ]
+          ],
+          "fact_basis": {
+            "security_code": "603999",
+            "market": "SSE",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "period_type": "annual",
+            "scope": "consolidated",
+            "currency": "CNY",
+            "unit": "万元",
+            "adjustment": "as_reported",
+            "value_kind": "actual",
+            "as_of": "2026-10-05T12:00:00+08:00",
+            "published_at": "2026-03-01T00:00:00+08:00",
+            "metric_id": "fx_cash_effect"
+          }
         },
         "net_cash_change": {
           "value": "8",
@@ -366,12 +846,29 @@
             {
               "locator": "fixture:annual-report.pdf#page=2",
               "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-              "page": 2
+              "page": 2,
+              "evidence_id": "ev_net_cash_change"
             }
-          ]
+          ],
+          "fact_basis": {
+            "security_code": "603999",
+            "market": "SSE",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "period_type": "annual",
+            "scope": "consolidated",
+            "currency": "CNY",
+            "unit": "万元",
+            "adjustment": "as_reported",
+            "value_kind": "actual",
+            "as_of": "2026-10-05T12:00:00+08:00",
+            "published_at": "2026-03-01T00:00:00+08:00",
+            "metric_id": "net_cash_change"
+          }
         }
       },
-      "currency": "CNY"
+      "currency": "CNY",
+      "scope": "consolidated"
     }
   ],
   "notes": [

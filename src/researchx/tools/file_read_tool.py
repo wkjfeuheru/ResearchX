@@ -98,6 +98,78 @@ class FileReadTool(BaseTool[FileReadToolInput]):
             f"{arguments.offset + index + 1:>6}\t{line}" for index, line in enumerate(selected)
         ]
         digest = hashlib.sha256(raw).hexdigest()
+        from researchx.state.models import SourceUsage
+
+        usage = SourceUsage()
+        policy_store = context.metadata.get("research_store")
+        workspace_runtime = context.metadata.get("research_workspace_runtime")
+        if policy_store is None and workspace_runtime is not None:
+            policy_store = workspace_runtime.store
+        if policy_store is not None:
+            memory = await policy_store.load()
+            # Reuse only a classification for these exact bytes at this exact locator.
+            # A changed file must be classified again; path names never confer permission.
+            for source in memory.sources.values():
+                if (
+                    source.kind == "file"
+                    and source.locator == str(path)
+                    and source.content_hash == digest
+                ):
+                    usage = source.usage
+                    break
+            from researchx.state.source_policy import may_enter_external_model, may_export
+            from researchx.state.dispatch_audit import authorised_candidate_file
+
+            if await authorised_candidate_file(policy_store, path, digest):
+                usage = SourceUsage(
+                    category="internal",
+                    provider="generated_candidate",
+                    licence_status="confirmed",
+                    model_use_allowed=True,
+                    completeness="fragment",
+                )
+
+            if memory_file:
+                # The workspace memory is operational context explicitly managed by
+                # the main agent, not a newly ingested external document.
+                usage = SourceUsage(
+                    category="internal",
+                    provider="workspace_context",
+                    licence_status="confirmed",
+                    model_use_allowed=True,
+                    completeness="fragment",
+                )
+            elif resource:
+                # The selected Skill resource resolver already checks the
+                # approved plugin root and symlinks. Instructions are executable
+                # operational context, not authority to classify research data.
+                usage = SourceUsage(
+                    category="internal",
+                    provider="approved_skill_resource",
+                    licence_status="confirmed",
+                    model_use_allowed=True,
+                    completeness="fragment",
+                )
+            for artifact in memory.artifacts.values():
+                if artifact.content_hash != digest or artifact.stale or not artifact.evidence_ids:
+                    continue
+                inputs = [
+                    memory.sources[memory.evidence_pool[key].source_id].usage
+                    for key in artifact.evidence_ids
+                    if key in memory.evidence_pool
+                ]
+                if len(inputs) == len(artifact.evidence_ids) and all(
+                    may_enter_external_model(item) for item in inputs
+                ):
+                    usage = SourceUsage(
+                        category="internal",
+                        provider="derived_research_artifact",
+                        licence_status="confirmed",
+                        model_use_allowed=True,
+                        internal_export_allowed=all(may_export(item) for item in inputs),
+                        completeness="full",
+                    )
+                    break
         output = "\n".join(numbered) if numbered else f"(no content in selected range for {path})"
         if project_mode:
             output += f"\n\nexpected_sha256: {digest} (whole file; use for write_file overwrite)"
@@ -115,6 +187,7 @@ class FileReadTool(BaseTool[FileReadToolInput]):
                 "research_source_specs": [
                     {
                         "kind": "file",
+                        "__host_usage": usage.model_dump(mode="json"),
                         "title": path.name,
                         "locator": f"{path}:{arguments.offset + 1}-{arguments.offset + len(selected)}",
                         "content": "\n".join(numbered),

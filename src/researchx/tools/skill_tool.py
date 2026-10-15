@@ -33,7 +33,6 @@ class SkillTool(BaseTool[SkillToolInput]):
         registry = load_skill_registry(
             context.cwd,
             extra_skill_dirs=context.metadata.get("extra_skill_dirs"),
-            extra_plugin_roots=context.metadata.get("extra_plugin_roots"),
             settings=context.metadata.get("skill_settings"),
         )
         skill = (

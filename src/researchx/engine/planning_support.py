@@ -25,6 +25,8 @@ PLANNING_PROMPT = """你是一个受约束的投研规划 Agent。投研上下�
 只返回要求的结构化提交内容。
 你不能写入记忆、运行研究工具、调用 planner/replanner 或启动 Runtime。
 将任务组织为可核验的研究问题，而不是逐个工具调用；使用稳定的任务 ID 和 DAG。
+互不依赖的新闻、公告、研报观点等采集维度组织为一个资料采集主任务，并在 description 中说明并行分支；
+主代理用 dispatch_subagents 派发。只有真实的数据或产物依赖才增加 DAG 边，综合判断等待必要资料复核。
 每个新任务或替换任务都必须是 pending 状态、版本为 1、没有结果或租约；明确填写 acceptance_criteria
 和 required_artifact_kinds（note/dataset/model/chart/report_draft）。将目标要求的原文复制到任务验收标准，
 并按产物类型或标题覆盖所有交付物。
@@ -209,7 +211,7 @@ async def planning_packet(context: ToolExecutionContext) -> dict[str, object]:
     plan = memory.plans.get(memory.research_state.current_plan_id or "")
     artifact_ids = {key for task in plan.tasks for key in task.artifact_ids} if plan else set()
     finding_ids = {key for task in plan.tasks for key in task.finding_ids} if plan else set()
-    view = store.view(memory)
+    view = store.model_view(memory)
     return {
         "objective": memory.objectives[project.objective_revision].model_dump(mode="json"),
         "plan": plan.model_dump(mode="json") if plan else None,

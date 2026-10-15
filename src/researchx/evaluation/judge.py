@@ -99,6 +99,7 @@ quote 使用短的连续原文片段，通常不超过120字符；不拼接句�
 优先填写answer_line和answer_end_line，对应evaluated_numbered每行前缀的行号，程序会从原文提取quote。
 ClaimReview也优先用answer_line定位被评估陈述，不用改写后的text代替原始quote。
 允许等价工具路径；技能加载不是脚本执行。冲突须检查双方口径，未解决不能输出确定结论。
+任务要求技能或冲突判断时，path.skill_use 与 path.conflict 必须给出 0-4 的数值（没有执行就是 0），不得留空为 null；回答为空或任务失败同样按缺失计 0。
 将 evaluated_text 所有实质性陈述拆分为原子项，覆盖完整正文。标题、套话、来源列表不算事实。
 区分 fact、inference、明确标注的 assumption；推断要有依据，不允许用“推断”掩盖伪造事实。
 工具失败等运行说明归 operation，并用实际 observation_ids 支持，不作为投研业务事实。
@@ -188,7 +189,9 @@ def numbered_block(text: str) -> str:
     return "\n".join(f"{index}|{line}" for index, line in enumerate(text.splitlines(), 1))
 
 
-def trim_trajectory(artifact: RunArtifact, *, limit: int = TRAJECTORY_LIMIT) -> list[dict[str, Any]]:
+def trim_trajectory(
+    artifact: RunArtifact, *, limit: int = TRAJECTORY_LIMIT
+) -> list[dict[str, Any]]:
     """Compact tool trajectory: keep order-relevant identity, bound every free-text field.
 
     Path semantics depend on which tools ran and in what order (and on failures), not on the

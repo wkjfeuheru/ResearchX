@@ -129,18 +129,11 @@ async def test_memory_disabled_ignores_retired_state_and_plugins_keep_hooks(tmp_
 
     monkeypatch.setenv("RESEARCHX_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("RESEARCHX_DATA_DIR", str(tmp_path / "data"))
-    save_settings(Settings(research_memory={"enabled": False}))
-    plugin = tmp_path / "plugins" / "research"
-    plugin.mkdir(parents=True)
-    (plugin / "plugin.json").write_text(json.dumps({"name": "research", "version": "1"}))
-    (plugin / "hooks.json").write_text(
-        json.dumps({"session_start": [{"type": "command", "command": "printf RESEARCH_HOOK_OK"}]})
-    )
+    save_settings(Settings(research_memory={"enabled": False}, hooks={"session_start": [{"type": "command", "command": "printf RESEARCH_HOOK_OK"}]}))
     bundle = await build_runtime(
         cwd=str(tmp_path),
         session_id="a" * 12,
         api_client=StaticApiClient("ok"),
-        extra_plugin_roots=[plugin.parent],
         restore_tool_metadata={
             "research_mode": False,
             "long_term_memory_store": object(),
@@ -148,11 +141,11 @@ async def test_memory_disabled_ignores_retired_state_and_plugins_keep_hooks(tmp_
         },
     )
     try:
-        assert "research_memory" not in {tool.name for tool in bundle.tool_registry.list_tools()}
-        assert "investigate_conflict" not in {
-            tool.name for tool in bundle.tool_registry.list_tools()
-        }
-        assert "research_store" not in bundle.engine.tool_metadata
+        names = {tool.name for tool in bundle.tool_registry.list_tools()}
+        assert {"research_memory", "planner", "replanner", "research_project", "dispatch_subagents"} <= names
+        assert "investigate_conflict" not in names
+        assert bundle.engine.tool_metadata["research_store"] is not None
+        assert bundle.engine.tool_metadata["research_auto_inject"] is False
         assert not (
             {"research_mode", "long_term_memory_store", "task_focus_state"}
             & bundle.engine.tool_metadata.keys()
@@ -196,7 +189,6 @@ async def test_runtime_filters_retired_plugin_tools_but_keeps_services_and_confi
         cwd=str(tmp_path),
         session_id="b" * 12,
         api_client=StaticApiClient("ok"),
-        extra_plugin_roots=[plugin.parent],
         connect_mcp=False,
         settings_override=Settings(
             research_memory={
@@ -210,7 +202,6 @@ async def test_runtime_filters_retired_plugin_tools_but_keeps_services_and_confi
         names = {tool.name for tool in bundle.tool_registry.list_tools()}
         assert RESEARCH_EXCLUDED_TOOLS.isdisjoint(names)
         assert {
-            "plugin_research_reader",
             "dispatch_subagents",
             "list_mcp_resources",
             "read_mcp_resource",

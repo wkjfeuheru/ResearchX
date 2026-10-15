@@ -16,9 +16,9 @@ from researchx.tools.skill_tool import SkillTool, SkillToolInput
 from tests.research_skill_support import FUNCTIONS, RESULT_TYPES
 
 FIXTURES = Path(__file__).parents[1] / "fixtures/research_skills"
-FORECAST = "researchx.plugins.bundled.analysis-modeling.skills.earnings-forecast.scripts"
-DEEP = "researchx.plugins.bundled.report-generation.skills.deep-investment-report.scripts"
-REPORTING = import_module("researchx.plugins.bundled.report-generation.reporting")
+FORECAST = "researchx.skills.bundled.earnings-forecast.scripts"
+DEEP = "researchx.skills.bundled.deep-investment-report.scripts"
+REPORTING = import_module("researchx.skills._shared.reporting")
 
 
 def fixture(kind):
@@ -140,7 +140,7 @@ async def test_deep_tool_calls_forecast_then_assembles_exact_upstream_results(
     "name", ["financial-commentary", "industry-commentary", "industry-deep-dive"]
 )
 def test_report_templates_are_runnable_and_missing_evidence_is_a_gap(name, tmp_path):
-    scripts = f"researchx.plugins.bundled.report-generation.skills.{name}.scripts"
+    scripts = f"researchx.skills.bundled.{name}.scripts"
     model = import_module(scripts + ".models").ReportResult
     ref = compute("financial").inputs[0].model_dump(mode="json")
     result = model.model_validate(
@@ -177,7 +177,7 @@ def test_report_templates_are_runnable_and_missing_evidence_is_a_gap(name, tmp_p
 
 def financial_commentary(tmp_path):
     model = import_module(
-        "researchx.plugins.bundled.report-generation.skills.financial-commentary.scripts.models"
+        "researchx.skills.bundled.financial-commentary.scripts.models"
     ).ReportResult
     data = compute("financial").model_dump(mode="json")
     upstream = tmp_path / "financial.json"
@@ -309,6 +309,7 @@ async def test_industry_commentary_tool_template_cli_and_evidence_gaps(tmp_path,
     input_path.write_text(
         json.dumps(
             {
+                "schema_version": 3,
                 "subject": "制造业（测试资料范围）",
                 "as_of": "2026-10-05T12:00:00+08:00",
                 "inputs": [ref],

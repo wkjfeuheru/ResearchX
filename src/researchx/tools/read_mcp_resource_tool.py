@@ -25,6 +25,19 @@ class ReadMcpResourceTool(BaseTool[ReadMcpResourceToolInput]):
     def __init__(self, manager: McpClientManager) -> None:
         self._manager = manager
 
+    def execution_contract(self, arguments: ReadMcpResourceToolInput | None = None) -> object:
+        if arguments is None:
+            return None
+        # The native resource-read protocol, unlike arbitrary MCP tool annotations.
+        return {
+            "name": self.name,
+            "source": "builtin",
+            "effect": "read_only",
+            "required_capabilities": ("mcp.call",),
+            "resources_read": (f"mcp:{arguments.server}",),
+            "parallelism": "resources",
+        }
+
     def is_read_only(self, arguments: ReadMcpResourceToolInput) -> bool:
         del arguments
         return True

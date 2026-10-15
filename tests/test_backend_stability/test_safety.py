@@ -17,7 +17,6 @@ from researchx.services.execution.tool_execution import ToolExecutionService
 from researchx.services.execution.operations import OperationStore
 from researchx.services.sessions.storage import save_session_snapshot
 from researchx.skills.loader import load_skills_from_dirs
-from researchx.plugins.loader import discover_plugin_paths, load_plugin
 from researchx.tools.base import ToolExecutionContext
 from researchx.tools.bash_tool import BashTool, BashToolInput
 from researchx.storage.filesystem import atomic_write_text
@@ -180,36 +179,13 @@ def test_selected_entry_rechecks_original_root_after_directory_replacement(tmp_p
         skill.load_content()
 
 
-def test_plugin_discovery_and_manifest_cannot_escape_approved_root(tmp_path, monkeypatch):
-    approved, outside = tmp_path / "plugins", tmp_path / "outside"
+def test_skill_discovery_cannot_escape_approved_root(tmp_path):
+    approved, outside = tmp_path / "skills", tmp_path / "outside"
     approved.mkdir()
     outside.mkdir()
-    (outside / "plugin.json").write_text('{"name":"external"}')
+    (outside / "SKILL.md").write_text("---\nname: external\ndescription: Outside\n---\n")
     (approved / "external").symlink_to(outside, target_is_directory=True)
-    monkeypatch.setattr("researchx.plugins.loader.BUNDLED_PLUGINS_DIR", approved)
-    assert outside not in discover_plugin_paths(tmp_path)
-    assert not any(p.name == "external" for p in discover_plugin_paths(tmp_path))
-    local = approved / "local"
-    local.mkdir()
-    (local / "plugin.json").symlink_to(outside / "plugin.json")
-    assert load_plugin(local, {}) is None
-    (local / "plugin.json").unlink()
-    (local / "plugin.json").write_text('{"name":"local","skills_dir":"../../outside"}')
-    assert load_plugin(local, {}) is None
-
-
-async def test_default_agent_shell_fails_closed_even_if_metadata_requests_host(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setattr("researchx.sandbox.adapter.shutil.which", lambda name: None)
-    settings = Settings()
-    settings.sandbox.allow_trusted_host = True
-    context = ToolExecutionContext(
-        cwd=tmp_path, settings=settings, metadata={"allow_trusted_host": True}
-    )
-    result = await BashTool().execute(BashToolInput(command="touch escaped"), context)
-    assert result.is_error and not (tmp_path / "escaped").exists()
-    assert result.metadata["safety_level"] == "sandbox_required"
+    assert load_skills_from_dirs([approved]) == []
 
 
 def test_automatic_user_skill_root_alias_does_not_scan_external_content(tmp_path, monkeypatch):

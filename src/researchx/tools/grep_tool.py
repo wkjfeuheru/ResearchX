@@ -32,6 +32,13 @@ class GrepTool(BaseTool[GrepToolInput]):
     """Search text files for a regex pattern."""
 
     name = "grep"
+    contract = {
+        "name": name,
+        "source": "builtin",
+        "effect": "read_only",
+        "resources_read": ("*",),
+        "parallelism": "resources",
+    }
     description = "使用正则表达式搜索文件内容。"
     input_model = GrepToolInput
 
@@ -43,7 +50,9 @@ class GrepTool(BaseTool[GrepToolInput]):
         context = ToolExecutionContext.from_context(context)
         try:
             (await context.validate_search_pattern(arguments.file_glob))
-            if (await context.workspace_runtime()) and Path(arguments.file_glob).is_absolute():
+            if (
+                (await context.workspace_runtime()) or context.metadata.get("subagent_child")
+            ) and Path(arguments.file_glob).is_absolute():
                 (await context.resolve_path(arguments.file_glob))
                 raise ResearchError("Research grep file_glob must be relative to its root")
             root = await context.resolve_path(arguments.root)
@@ -57,6 +66,10 @@ class GrepTool(BaseTool[GrepToolInput]):
                 ),
                 is_error=True,
             )
+        if context.metadata.get("research_store") or context.metadata.get(
+            "research_workspace_runtime"
+        ):
+            return await _research_grep(arguments, context, root)
         if root.is_file():
             display_base = _display_base(root, context.cwd)
             matches = await _rg_grep_file(
@@ -392,3 +405,63 @@ def _format_path(path: Path, display_base: Path) -> str:
         return str(path.relative_to(display_base))
     except ValueError:
         return str(path)
+
+
+async def _research_grep(
+    arguments: GrepToolInput, context: ToolExecutionContext, root: Path
+) -> ToolResult:
+    """Search only authorised file chunks; grep must not bypass read_file's gate."""
+    import time
+    from researchx.tools.file_read_tool import FileReadTool, FileReadToolInput
+    from researchx.state.source_policy import collected_usage, may_enter_external_model
+
+    pattern = re.compile(arguments.pattern, 0 if arguments.case_sensitive else re.IGNORECASE)
+    paths = (
+        [root]
+        if root.is_file()
+        else await context.safe_search_paths(root.glob(arguments.file_glob))
+    )
+    output: list[str] = []
+    specs: list[dict[str, object]] = []
+    blocked = 0
+    deadline = time.monotonic() + arguments.timeout_seconds
+    reader = FileReadTool()
+    for path in paths:
+        if not path.is_file():
+            continue
+        offset = 0
+        while len(output) < arguments.limit:
+            if time.monotonic() >= deadline:
+                return ToolResult(output="研究文件搜索超时；请缩小路径范围。", is_error=True)
+            result = await reader.execute(
+                FileReadToolInput(path=str(path), offset=offset, limit=2000), context
+            )
+            chunks = result.metadata.get("research_source_specs", [])
+            if result.is_error or not chunks:
+                break
+            spec = chunks[0]
+            if not may_enter_external_model(collected_usage("read_file", spec)):
+                blocked += 1
+                break
+            lines = str(spec["content"]).splitlines()
+            matched = []
+            for line in lines:
+                number, _, text = line.partition("\t")
+                if pattern.search(text):
+                    rendered = f"{path}:{number.strip()}:{text}"
+                    output.append(rendered)
+                    matched.append(rendered)
+                    if len(output) >= arguments.limit:
+                        break
+            if matched:
+                specs.append({**spec, "content": "\n".join(matched), "fragment": True})
+            if len(lines) < 2000:
+                break
+            offset += len(lines)
+        if len(output) >= arguments.limit:
+            break
+    notice = f"\n另有 {blocked} 个文件因读取失败或使用范围未确认而未搜索。" if blocked else ""
+    return ToolResult(
+        output=("\n".join(output) or "(no matches)") + notice,
+        metadata={"research_source_specs": specs},
+    )

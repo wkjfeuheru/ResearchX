@@ -48,7 +48,7 @@ async def ensure_session(db: AsyncSession, workspace: str, session: str, cwd: st
         await db.execute(
             insert(s.workspaces)
             .values(workspace_id=workspace, canonical_path=cwd, updated_at=time.time())
-            .on_conflict_do_nothing(index_elements=["workspace_id"])
+            .on_conflict_do_nothing()
         )
         path = await db.scalar(
             select(s.workspaces.c.canonical_path).where(s.workspaces.c.workspace_id == workspace)
@@ -411,6 +411,32 @@ class ResearchRecords:
                     revision=item["receipt"].get("revision", memory.revision),
                 )
             )
+        # A changed evidence/source/artifact invalidates its frozen human approval
+        # in the same transaction as the authoritative research revision.
+        frozen = (
+            (
+                await db.execute(
+                    select(s.deliverables).where(
+                        scope(s.deliverables, self.workspace, self.session),
+                        s.deliverables.c.status.in_(["awaiting_review", "approved"]),
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+        from researchx.state.deliveries import dependencies_current
+
+        for delivery in frozen:
+            if not dependencies_current(memory, delivery["manifest"]):
+                await db.execute(
+                    update(s.deliverables)
+                    .where(
+                        scope(s.deliverables, self.workspace, self.session),
+                        s.deliverables.c.delivery_id == delivery["delivery_id"],
+                    )
+                    .values(status="invalidated", updated_at=time.time())
+                )
         await db.execute(
             update(s.research_sessions)
             .where(scope(s.research_sessions, self.workspace, self.session))

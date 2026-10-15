@@ -35,7 +35,7 @@ cd ../..
 uv run rx web
 ```
 
-The installation scripts support PyPI and source installs. `rx`, `oh` and `openh` share the same CLI; on PowerShell use `openh web` or `oh.exe web` to avoid the built-in `oh` alias.
+Install from PyPI or source. `rx`, `oh` and `openh` share the same CLI; on PowerShell use `openh web` or `oh.exe web` to avoid the built-in `oh` alias. If console launchers are not on PATH, use `python -m researchx web`.
 
 ## Research workflow
 
@@ -47,7 +47,7 @@ Use **Stop** to cancel generation, or **Interrupt and modify** to save a change 
 
 Report production can start an explicit `research_project` with a versioned objective. The main agent calls the registered `planner` and `replanner` tools; the existing loop's ResearchAgentRuntime validates their proposals, leases DAG tasks, isolates late results and checks evidence-backed artifacts before freezing delivery. Report drafts are downloadable Markdown artifacts. Ordinary questions and historical plans keep their existing path. See [core tool contracts and compatibility](docs/AGENT_CORE_TOOLS.md). The offline earnings commentary fixture can be run with `uv run pytest -q tests/test_research/test_earnings_workflow.py`.
 
-Each report project now binds an isolated directory with `MEMORY.md`, `artifacts/` and `reports/`. Existing file tools maintain the Markdown background, and the original loop reloads it for each model request. See [workspace configuration, file boundaries and recovery](docs/WORKSPACE_MEMORY.md).
+Each report project binds an isolated directory with `MEMORY.md`, `artifacts/` and `reports/`. File tools maintain the Markdown notes. Model requests receive a bounded research index and can read `MEMORY.md` on demand. See [workspace configuration, file boundaries and recovery](docs/WORKSPACE_MEMORY.md).
 
 `dispatch_subagents` delegates 1–16 independent assignments with bounded parallelism, separate histories and private output directories under `subagents/`. Children return candidates for main-agent review and cannot edit main `MEMORY.md` or authoritative task state. The research registry excludes `notebook_edit`, `config`, `mcp_auth`, `image_generation` and `sleep`; host configuration services remain available. The general registry compatibility argument uses the same retained research tools.
 
@@ -74,17 +74,15 @@ The official DeepSeek API IDs `deepseek-flash`, `deepseek-v4-pro`, and the Flash
 ```bash
 oh mcp list
 oh mcp add --help
-oh plugin list
-oh plugin install PATH
 oh config show
 oh config set research_memory.enabled false
 ```
 
-Plugins can contribute skills, tools, MCP services and generic hooks. Installed skills and plugin discovery directories remain compatible, including `.agents/skills` and `.claude/skills`. Legacy plugin agent and terminal command declarations are accepted but ignored, with diagnostics in `oh plugin list`.
+Business extensions use individual Skills (`SKILL.md` with scripts, references and templates). Builtin, user and project Skills can be enabled independently. Compatibility directories include `.agents/skills` and `.claude/skills`; MCP services and hooks use independent settings.
 
-Web search defaults to configured investment research sources, ordered by official disclosures/statistics/policy, industry professionals, then financial media. Broader web discovery requires an explicit scope. Business Skills ship in `analysis-modeling` and `report-generation`, with package and individual switches and metadata-only discovery. See [Skill modules and progressive loading](docs/skill-modules.md).
+Web search defaults to configured investment research sources, ordered by official disclosures/statistics/policy, industry professionals, then financial media. Broader web discovery requires an explicit scope. Eight builtin business Skills ship in `skills/bundled`, with individual switches, metadata-only discovery and on-demand loading. See [Skill modules and progressive loading](docs/skill-modules.md).
 
-Research memory defaults to enabled with a 6,000-token injection budget. Disabling it never activates an older memory system. Old configuration fields are ignored; legacy memory context budgets migrate only when no top-level or active-model budget is set. Existing user data is not automatically removed.
+Research recall defaults to a 1,500-token summary and at most 12 indexed records. `MEMORY.md` is read on demand through file tools. Disabling recall does not disable research persistence or execution checks. Legacy memory context budgets migrate only when no top-level or active-model budget is set. Existing user data is not automatically removed.
 
 The personal assistant product, messaging integrations, coding orchestration, terminal UI, scheduling and old long-term/vector memory are retired. Only the research Web runtime and administrative CLI remain.
 

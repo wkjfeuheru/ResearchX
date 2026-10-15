@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "company": {
     "name": "样例制造",
     "code": "603999",
@@ -30,9 +30,25 @@
       {
         "locator": "fixture:annual-report.pdf#page=1",
         "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-        "page": 1
+        "page": 1,
+        "evidence_id": "ev_base_revenue"
       }
-    ]
+    ],
+    "fact_basis": {
+      "security_code": "603999",
+      "market": "SSE",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "period_type": "annual",
+      "scope": "consolidated",
+      "currency": "CNY",
+      "unit": "万元",
+      "adjustment": "as_reported",
+      "value_kind": "actual",
+      "as_of": "2026-10-05T12:00:00+08:00",
+      "published_at": "2026-03-01T00:00:00+08:00",
+      "metric_id": "revenue"
+    }
   },
   "scenarios": [
     {
@@ -104,7 +120,8 @@
                 {
                   "locator": "fixture:annual-report.pdf#page=1",
                   "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-                  "page": 1
+                  "page": 1,
+                  "evidence_id": "ev_assumption"
                 }
               ]
             }
@@ -176,7 +193,8 @@
                 {
                   "locator": "fixture:annual-report.pdf#page=1",
                   "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-                  "page": 1
+                  "page": 1,
+                  "evidence_id": "ev_assumption"
                 }
               ]
             }
@@ -248,7 +266,8 @@
                 {
                   "locator": "fixture:annual-report.pdf#page=1",
                   "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-                  "page": 1
+                  "page": 1,
+                  "evidence_id": "ev_assumption"
                 }
               ]
             }
@@ -325,7 +344,8 @@
                 {
                   "locator": "fixture:annual-report.pdf#page=1",
                   "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-                  "page": 1
+                  "page": 1,
+                  "evidence_id": "ev_assumption"
                 }
               ]
             }
@@ -397,7 +417,8 @@
                 {
                   "locator": "fixture:annual-report.pdf#page=1",
                   "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-                  "page": 1
+                  "page": 1,
+                  "evidence_id": "ev_assumption"
                 }
               ]
             }
@@ -469,7 +490,8 @@
                 {
                   "locator": "fixture:annual-report.pdf#page=1",
                   "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-                  "page": 1
+                  "page": 1,
+                  "evidence_id": "ev_assumption"
                 }
               ]
             }
@@ -546,7 +568,8 @@
                 {
                   "locator": "fixture:annual-report.pdf#page=1",
                   "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-                  "page": 1
+                  "page": 1,
+                  "evidence_id": "ev_assumption"
                 }
               ]
             }
@@ -618,7 +641,8 @@
                 {
                   "locator": "fixture:annual-report.pdf#page=1",
                   "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-                  "page": 1
+                  "page": 1,
+                  "evidence_id": "ev_assumption"
                 }
               ]
             }
@@ -690,7 +714,8 @@
                 {
                   "locator": "fixture:annual-report.pdf#page=1",
                   "title": "人工核对的样例制造2025年报（固定测试材料，非真实公司）",
-                  "page": 1
+                  "page": 1,
+                  "evidence_id": "ev_assumption"
                 }
               ]
             }
@@ -705,6 +730,7 @@
       "title": "business",
       "paragraphs": [
         {
+          "kind": "fact",
           "text": "原文认为收入增长受订单影响，并提示履行风险。",
           "references": [
             {
@@ -721,6 +747,7 @@
       "title": "events",
       "paragraphs": [
         {
+          "kind": "fact",
           "text": "原文认为收入增长受订单影响，并提示履行风险。",
           "references": [
             {
@@ -737,6 +764,7 @@
       "title": "financial_quality",
       "paragraphs": [
         {
+          "kind": "fact",
           "text": "原文认为收入增长受订单影响，并提示履行风险。",
           "references": [
             {
@@ -753,6 +781,7 @@
       "title": "forecast",
       "paragraphs": [
         {
+          "kind": "fact",
           "text": "原文认为收入增长受订单影响，并提示履行风险。",
           "references": [
             {
@@ -769,6 +798,7 @@
       "title": "industry",
       "paragraphs": [
         {
+          "kind": "fact",
           "text": "原文认为收入增长受订单影响，并提示履行风险。",
           "references": [
             {
@@ -785,6 +815,7 @@
       "title": "risks",
       "paragraphs": [
         {
+          "kind": "fact",
           "text": "原文认为收入增长受订单影响，并提示履行风险。",
           "references": [
             {
@@ -801,6 +832,7 @@
       "title": "sources",
       "paragraphs": [
         {
+          "kind": "fact",
           "text": "原文认为收入增长受订单影响，并提示履行风险。",
           "references": [
             {
@@ -817,6 +849,7 @@
       "title": "summary",
       "paragraphs": [
         {
+          "kind": "fact",
           "text": "原文认为收入增长受订单影响，并提示履行风险。",
           "references": [
             {

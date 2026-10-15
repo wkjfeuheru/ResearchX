@@ -312,15 +312,12 @@ To scan for hardcoded secrets:
 3. Classify severity: HIGH (actual key/password), MEDIUM (variable name), LOW (comment/doc)
 """)
 
-        # Load plugin and make its skills available
-        from researchx.plugins.loader import load_plugin
+        from researchx.skills.loader import load_skills_from_dirs
 
-        plugin = load_plugin(plugin_dir, enabled_plugins={})
-        print(f"  Plugin loaded: {plugin.name}, skills: {[s.name for s in plugin.skills]}")
-
-        # Monkey-patch skills loading to include plugin skill
+        skills = load_skills_from_dirs([plugin_skills])
+        assert any(skill.name == "scan-secrets" for skill in skills)
         orig_dir = sl.get_user_skills_dir
-        sl.get_user_skills_dir = lambda: plugin_skills  # Plugin skills as user skills
+        sl.get_user_skills_dir = lambda: plugin_skills
 
         api = AnthropicApiClient(api_key=API_KEY, base_url=BASE_URL)
         reg = ToolRegistry()

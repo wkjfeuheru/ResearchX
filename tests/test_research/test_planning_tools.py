@@ -227,7 +227,7 @@ async def test_premature_llm_stop_is_bounded_and_never_completes(project, direct
         system_prompt="parent",
         max_turns=6,
         context_window_tokens=200000,
-        tool_metadata={"research_store": project.store},
+        tool_metadata={"research_store": project.store, "business_profile": "financial_commentary"},
     )
     if direct:
         query = context(project, model)

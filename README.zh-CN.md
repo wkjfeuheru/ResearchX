@@ -40,7 +40,7 @@ uv run rx web
 
 Research Store 保留证据、引用、论证、结论和冲突管理。报告项目的目标、计划和任务状态由 ResearchAgentRuntime、TaskManager 和 CompletionPolicy 统一控制；旧记忆规划操作仅用于非报告项目会话。工具调用成功不代表事实已核验；搜索摘要、用户转述和暂定结论有明确状态。更正资料保留历史版本，并将依赖结论标记为待复核。
 
-Planner/Replanner 继续作为注册工具返回提案，由 Runtime 验证并提交。`dispatch_subagents` 支持单任务及多任务并行，每个子代理使用独立历史和输出目录，结果由主 Agent 复核。项目工作区包含 `MEMORY.md`、`artifacts/`、`reports/` 和 `subagents/`；子代理不能修改主记忆或权威任务状态。默认研究注册表移除 `notebook_edit`、`config`、`mcp_auth`、`image_generation`、`sleep`，保留底层服务及显式通用注册表。参见[核心工具实现与兼容说明](docs/AGENT_CORE_TOOLS.md)及[工作区与 Markdown 记忆](docs/WORKSPACE_MEMORY.md)。
+Planner/Replanner 继续作为注册工具返回提案，由 Runtime 验证并提交。普通研究会话与报告项目均支持并行资料采集，详见[资源并发、候选来源与恢复](docs/parallel-research.md)。`dispatch_subagents` 支持单任务及多任务并行，每个子代理使用独立历史和输出目录，结果由主 Agent 复核。项目工作区包含 `MEMORY.md`、`artifacts/`、`reports/` 和 `subagents/`；子代理不能修改主记忆或权威任务状态。默认研究注册表移除 `notebook_edit`、`config`、`mcp_auth`、`image_generation`、`sleep`，保留底层服务及显式通用注册表。参见[核心工具实现与兼容说明](docs/AGENT_CORE_TOOLS.md)及[工作区与 Markdown 记忆](docs/WORKSPACE_MEMORY.md)。
 
 “停止生成”只取消执行；“打断并修改”保存修改要求、等待旧执行收束，再提交新计划。刷新或重启恢复已提交进度和来源，不自动启动新的模型调用。新对话不自动继承其他对话资料。
 
@@ -65,17 +65,15 @@ DeepSeek 官方模型 `deepseek-flash`、`deepseek-v4-pro` 及 Flash 的兼容�
 ```bash
 oh mcp list
 oh mcp add --help
-oh plugin list
-oh plugin install PATH
 oh config show
 oh config set research_memory.enabled false
 ```
 
-保留技能、插件工具、MCP 和通用 Hooks，继续兼容 `.agents/skills`、`.claude/skills` 等发现目录。旧插件 manifest 的 Agent 和终端命令声明可读取，但不执行；`oh plugin list` 显示诊断。
+业务扩展统一采用 Skills，内置、用户和项目技能独立启停，继续兼容 `.agents/skills`、`.claude/skills` 等发现目录。保留内置工具执行层；MCP 和通用 Hooks 使用独立配置。
 
-网页搜索默认限定投研来源，按官方、行业专业、财经媒体排序，扩大到全网需显式选择。技能采用插件分发，业务技能分为 `analysis-modeling` 和 `report-generation` 两包，支持包与单项启停、仅元数据发现以及按需加载。详见 [Skill 模块与渐进式加载](docs/skill-modules.md)。
+网页搜索默认限定投研来源，按官方、行业专业、财经媒体排序，扩大到全网需显式选择。八项内置业务技能位于 `skills/bundled`，支持单项启停、仅元数据发现以及按需加载。详见 [Skill 模块与渐进式加载](docs/skill-modules.md)。
 
-研究记忆默认启用，注入预算为 6,000 tokens，可独立关闭；关闭后不会启用旧记忆。废弃配置字段允许加载但忽略。旧 `memory` 上下文预算仅在顶层和当前模型均未指定预算时迁移。不会自动删除已有用户数据、凭据或自装扩展。
+研究记忆默认启用，自动摘要和索引最多注入 1,500 tokens、12 条记录；`MEMORY.md` 按需通过文件工具读取。研究记忆可独立关闭；关闭后不会启用旧记忆。废弃配置字段允许加载但忽略。旧 `memory` 上下文预算仅在顶层和当前模型均未指定预算时迁移。不会自动删除已有用户数据、凭据或自装扩展。
 
 请求发送前会检查完整上下文预算；未知模型需显式设置 `context_window_tokens`。压缩先保存原文，验收通过后才替换历史，详见[请求预算与可恢复压缩](docs/context-budget.md)。
 

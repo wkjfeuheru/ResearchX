@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 from researchx.config import Settings
-from researchx.plugins.types import LoadedPlugin
 
 from collections import defaultdict
 from researchx.hooks.events import HookEvent
@@ -52,9 +51,7 @@ class HookRegistry:
         return "\n".join(lines)
 
 
-def load_hook_registry(
-    settings: Settings, plugins: list[LoadedPlugin] | None = None
-) -> HookRegistry:
+def load_hook_registry(settings: Settings) -> HookRegistry:
     """Load hooks from the current settings object."""
     registry = HookRegistry()
     for raw_event, hooks in settings.hooks.items():
@@ -64,14 +61,4 @@ def load_hook_registry(
             continue
         for hook in hooks:
             registry.register(event, hook)
-    for plugin in plugins or []:
-        if not plugin.enabled:
-            continue
-        for raw_event, hooks in plugin.hooks.items():
-            try:
-                event = HookEvent(raw_event)
-            except ValueError:
-                continue
-            for hook in hooks:
-                registry.register(event, hook)
     return registry

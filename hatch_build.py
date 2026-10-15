@@ -22,9 +22,9 @@ class CustomBuildHook(BuildHookInterface[BuilderConfig]):
             sys.path.insert(0, str(Path(self.root) / "src"))
             from researchx.skills.metadata import content_hash, hash_resources
 
-            bundled = Path(self.root) / "src/researchx/plugins/bundled"
+            bundled = Path(self.root) / "src/researchx/skills"
             entries = {}
-            for entry in sorted(bundled.glob("*/skills/*/SKILL.md")):
+            for entry in sorted(bundled.glob("bundled/*/SKILL.md")):
                 entries[entry.relative_to(bundled).as_posix()] = {
                     "hash": content_hash(entry, verify=True, cache=False),
                     "resources": {
@@ -37,8 +37,8 @@ class CustomBuildHook(BuildHookInterface[BuilderConfig]):
                 }
             self._skill_index = TemporaryDirectory(prefix="researchx-skill-index-")
             index = Path(self._skill_index.name) / "skill-index.json"
-            index.write_text(json.dumps({"version": 1, "skills": entries}, sort_keys=True))
-            build_data["force_include"][str(index)] = "researchx/plugins/bundled/skill-index.json"
+            index.write_text(json.dumps({"version": 2, "skills": entries}, sort_keys=True))
+            build_data["force_include"][str(index)] = "researchx/skills/skill-index.json"
 
     def finalize(self, version: str, build_data: dict[str, Any], artifact_path: str) -> None:
         if hasattr(self, "_skill_index"):

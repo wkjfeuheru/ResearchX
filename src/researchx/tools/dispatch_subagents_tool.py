@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Mapping
+from types import MappingProxyType
 from pathlib import Path
 from typing import Literal, TYPE_CHECKING
 from researchx.engine.metadata import ExecutionMetadata
@@ -27,11 +29,14 @@ from researchx.state.dispatch_audit import (
     read_batch,
     write_batch,
     write_result,
+    write_branch,
+    recover_dispatches,
 )
 
 
 class SubagentTask(Record):
     task_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+    title: str | None = Field(default=None, max_length=120)
     instruction: str = Field(min_length=1, max_length=16000)
     context: str | None = Field(default=None, max_length=20000)
 
@@ -43,9 +48,11 @@ class SubagentResult(Record):
     evidence_refs: list[str] = Field(default_factory=list)
     output_paths: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+    candidate_sources: list[dict[str, object]] = Field(default_factory=list)
 
 
 class DispatchResult(Record):
+    workspace: str = ""
     dispatch_id: str
     results: list[SubagentResult]
 
@@ -106,6 +113,7 @@ class ReadOnlyResearchMemoryTool(BaseTool[ReadOnlyMemoryInput]):
             result = await self.store.apply(
                 arguments.operation.model_dump(mode="json"),
                 budget=int(context.metadata.get("research_injection_budget", 6000)),
+                model_access=True,
             )
             return ToolResult(output=json.dumps(result, ensure_ascii=False))
         except (ResearchError, OSError) as exc:
@@ -116,13 +124,20 @@ class SubmitCandidateTool(BaseTool[CandidateSubmission]):
     name = "submit_subagent_result"
     description = "提交简短的候选发现，附带已有证据 ID 以及相对于自身输出目录的文件路径。"
     input_model = CandidateSubmission
+    contract = {
+        "name": name,
+        "source": "builtin",
+        "effect": "read_only",
+        "resources_read": ("research.control",),
+        "parallelism": "resources",
+    }
 
     def __init__(
         self,
         runtime: ResearchAgentRuntime,
         workspace: Path,
         output_dir: Path,
-        baseline: tuple[int, int, int],
+        baseline: tuple[int, int, int] | Mapping[str, object],
     ) -> None:
         self.runtime, self.workspace, self.output_dir, self.baseline = (
             runtime,
@@ -141,11 +156,16 @@ class SubmitCandidateTool(BaseTool[CandidateSubmission]):
         try:
             current = await self.runtime.store.load()
             project = current.project
-            if (
-                not project
-                or (project.execution_epoch, project.objective_revision, project.plan_revision)
-                != self.baseline
-            ):
+            try:
+                if isinstance(self.baseline, Mapping):
+                    await self.runtime.validate_dispatch_scope(self.baseline)
+                elif (
+                    not project
+                    or (project.execution_epoch, project.objective_revision, project.plan_revision)
+                    != self.baseline
+                ):
+                    raise ResearchError("Parent scope changed")
+            except ResearchError:
                 return ToolResult(
                     output="主代理已修改研究范围，本子任务已撤销。停止执行，保留候选文件供审查。",
                     is_error=True,
@@ -192,6 +212,7 @@ SUBAGENT_PROMPT = """你是一个受约束的研究子代理，负责完成一�
 读取 research_memory 检查已有证据 ID 和来源链；绝不编造 ID。
 research_memory 只接受 operation.action=read；不能调用 update_task。被拒绝后不要换 ID 重试。
 新收集的信息只能作为候选发现，并在摘要或文件中写明来源位置和核验缺口。
+检索后读取相关原文；程序会保存来源快照，由主代理复核和登记正式证据。
 结束前调用 submit_subagent_result，提交简洁摘要、已有 evidence_refs 和真实的相对 output_paths。
 """
 
@@ -218,9 +239,13 @@ async def dispatch_subagents(
     tasks: list[SubagentTask], context: ToolExecutionContext, retry_dispatch_id: str | None = None
 ) -> DispatchResult:
     DispatchInput(tasks=tasks, retry_dispatch_id=retry_dispatch_id)
-    runtime = await context.workspace_runtime()
+    runtime = (
+        context.metadata.get("research_runtime")
+        or context.metadata.get("research_workspace_runtime")
+        or await context.workspace_runtime()
+    )
     if runtime is None:
-        raise ResearchError("Dispatch requires an active project workspace")
+        raise ResearchError("Dispatch requires an active research runtime")
     if retry_dispatch_id:
         previous_dir = dispatch_directory(runtime.store.directory, retry_dispatch_id)
         with lifecycle_lock(previous_dir) as acquired:
@@ -229,13 +254,13 @@ async def dispatch_subagents(
             previous = await read_batch(runtime.store, retry_dispatch_id)
             memory = await runtime.store.load()
             project = memory.project
-            if project is None or previous.get("project_id") != project.id:
+            if previous.get("project_id") != (project.id if project else None):
                 raise ResearchError("Retry belongs to another project")
             baseline = previous.get("baseline", [])
-            if len(baseline) != 3 or baseline[1:] != [
-                project.objective_revision,
-                project.plan_revision,
-            ]:
+            if project and (
+                len(baseline) != 3
+                or baseline[1:] != [project.objective_revision, project.plan_revision]
+            ):
                 raise ResearchError(
                     "Research direction changed; dispatch new assignments for the current objective"
                 )
@@ -244,7 +269,10 @@ async def dispatch_subagents(
             current_task = memory.research_state.current_task_id
             if previous.get("parent_task_id") != current_task:
                 raise ResearchError("Retry requires the original parent task lease")
-            current_plan = runtime.repository._plan(memory)
+            current_plan = memory.plans[memory.research_state.current_plan_id or ""]
+            old_scope = previous.get("scope")
+            if old_scope and old_scope.get("plan_id") != current_plan.id:
+                raise ResearchError("Research direction changed; dispatch new assignments")
             parent_task = next(task for task in current_plan.tasks if task.id == current_task)
             if (
                 previous.get("task_revision", parent_task.task_revision)
@@ -288,21 +316,25 @@ async def _dispatch(
     ):
         raise ResearchError("Recursive subagent dispatch is forbidden")
     query = context.metadata.get("query_context")
-    runtime = await context.workspace_runtime()
+    runtime = (
+        context.metadata.get("research_runtime")
+        or context.metadata.get("research_workspace_runtime")
+        or await context.workspace_runtime()
+    )
     if query is None or runtime is None:
         raise ResearchError(
             "Dispatch requires the main query context and an active project workspace"
         )
+    scope = MappingProxyType(await runtime.prepare_dispatch_scope())
     memory = await runtime.store.load()
-    if (
-        memory.project is None
-        or memory.project.status != "running"
-        or not memory.research_state.current_task_id
-    ):
-        raise ResearchError("Claim a research task before dispatching subagents")
     project = memory.project
-    baseline = (project.execution_epoch, project.objective_revision, project.plan_revision)
-    workspace = await runtime.resolve_workspace(project.id)
+    baseline = (
+        (project.execution_epoch, project.objective_revision, project.plan_revision)
+        if project
+        else ()
+    )
+    workspace = await runtime.resolve_dispatch_workspace()
+    await recover_dispatches(runtime.store, project.id if project else None, workspace)
     audit_dir = runtime.store.directory / "dispatches" / dispatch_id
     shared = query.tool_metadata
     if shared is None:
@@ -325,7 +357,8 @@ async def _dispatch(
         else None,
         "task_revision": parent_task.task_revision,
         "dispatch_id": dispatch_id,
-        "project_id": project.id,
+        "project_id": project.id if project else None,
+        "scope": dict(scope),
         "parent_task_id": memory.research_state.current_task_id,
         "baseline": baseline,
         "status": "running",
@@ -333,14 +366,47 @@ async def _dispatch(
     }
     await write_batch(runtime.store, audit)
 
+    async def emit_progress() -> None:
+        callback = context.metadata.get("tool_progress")
+        if callback:
+            await callback(await runtime.store.progress())
+
+    await emit_progress()
+
     async def worker(index: int, task: SubagentTask) -> None:
         output_dir = workspace / "subagents" / dispatch_id / task.task_id
         child_context: ToolExecutionContext | None = None
         tracker = CostTracker()
         result: SubagentResult | None = None
+        candidate_sources: list[dict[str, object]] = []
+
+        async def capture_candidates(specs: list[dict[str, object]]) -> None:
+            from researchx.storage.content import persist_object
+            from researchx.storage.database import current_database
+            from researchx.state.models import now
+
+            for spec in specs:
+                if len(candidate_sources) >= 50:
+                    raise ResearchError("Candidate source limit exceeded")
+                content = str(spec["content"])
+                ref = await persist_object(
+                    current_database(), runtime.store.workspace_id, content.encode()
+                )
+                candidate_sources.append(
+                    {
+                        **{key: value for key, value in spec.items() if key != "content"},
+                        "content_ref": ref,
+                        "collected_at": now(),
+                        "content_hash": ref.removeprefix("sha256:"),
+                    }
+                )
+
         try:
             async with semaphore:
-                output_dir = await runtime.resolve_tool_path(project.id, output_dir)
+                await runtime.validate_dispatch_scope(scope)
+                output_dir = runtime._check_path(workspace, output_dir)
+                await write_branch(runtime.store, dispatch_id, task.task_id, "running")
+                await emit_progress()
                 output_dir.mkdir(parents=True, exist_ok=True)
                 registry = ToolRegistry()
                 permitted = {
@@ -360,14 +426,22 @@ async def _dispatch(
                     if tool.name in permitted:
                         registry.register(tool)
                 registry.register(ReadOnlyResearchMemoryTool(runtime.store))
-                submission = SubmitCandidateTool(runtime, workspace, output_dir, baseline)
+                submission = SubmitCandidateTool(runtime, workspace, output_dir, scope)
                 registry.register(submission)
                 metadata: ExecutionMetadata = {
                     "subagent_child": True,
                     "research_workspace_runtime": runtime,
                     "subagent_parent_workspace": workspace,
                     "subagent_output_dir": output_dir,
-                    "subagent_baseline": baseline,
+                    "subagent_scope": scope,
+                    **(
+                        {"parent_operation_id": context.operation_id}
+                        if context.operation_id
+                        else {}
+                    ),
+                    "http_semaphore": shared.setdefault("http_semaphore", asyncio.Semaphore(4)),
+                    "record_candidate_sources": capture_candidates,
+                    "business_window": shared.get("business_window", {}),
                     "research_injection_budget": context.metadata.get(
                         "research_injection_budget", 6000
                     ),
@@ -389,7 +463,9 @@ async def _dispatch(
                     "output_directory": str(output_dir),
                     "objective": memory.objectives[project.objective_revision].model_dump(
                         mode="json"
-                    ),
+                    )
+                    if project
+                    else memory.task_context[-1].model_dump(mode="json"),
                 }
                 messages = [
                     ConversationMessage.from_user_text(
@@ -429,17 +505,42 @@ async def _dispatch(
             )
         finally:
             if result is not None:
+                result.candidate_sources = candidate_sources
                 results[index] = result
                 try:
                     if result.status != "completed" and child_context:
                         result.output_paths = await _safe_outputs(
                             child_context, workspace, output_dir
                         )
+                    # Host-observed bytes, not the child's declared metadata, bind
+                    # generated notes to the authorised input set.
+                    import hashlib
+
+                    output_records = []
+                    if result.status == "completed":
+                        for relative in result.output_paths:
+                            path = runtime._check_path(workspace, workspace / relative)
+                            output_records.append(
+                                {
+                                    "path": str(path),
+                                    "hash": hashlib.sha256(path.read_bytes()).hexdigest(),
+                                    "source_hashes": [
+                                        source["content_hash"] for source in candidate_sources
+                                    ],
+                                    "evidence_refs": result.evidence_refs,
+                                }
+                            )
                     await write_result(
                         runtime.store,
                         dispatch_id,
-                        {**result.model_dump(mode="json"), "usage": tracker.total.model_dump()},
+                        {
+                            **result.model_dump(mode="json"),
+                            "usage": tracker.total.model_dump(),
+                            "output_records": output_records,
+                        },
                     )
+                    if result.status != "cancelled":
+                        await emit_progress()
                 except (OSError, ResearchError) as exc:
                     result.errors.append(f"Could not persist child audit: {exc}")
                     if result.status != "cancelled":
@@ -464,20 +565,17 @@ async def _dispatch(
                     item.status = "failed"
         assert all(item is not None for item in results), "Every settled child must have a result"
         settled = [item for item in results if item is not None]
-        current = (await runtime.store.load()).project
-        if (
-            not current
-            or (current.execution_epoch, current.objective_revision, current.plan_revision)
-            != baseline
-        ):
+        try:
+            await runtime.validate_dispatch_scope(scope)
+        except ResearchError:
             for result in settled:
                 if result.status == "completed":
                     result.status, result.evidence_refs = "failed", []
                     result.errors.append(
-                        "Parent scope changed before dispatch aggregation; candidate requires review"
+                        "Parent scope changed before aggregation; candidate requires review"
                     )
         audit["status"] = "completed"
-        return DispatchResult(dispatch_id=dispatch_id, results=settled)
+        return DispatchResult(workspace=str(workspace), dispatch_id=dispatch_id, results=settled)
     except asyncio.CancelledError:
         audit["status"] = "cancelled"
         for child in children:
@@ -489,7 +587,13 @@ async def _dispatch(
             if not child.done():
                 child.cancel()
         await asyncio.gather(*children, return_exceptions=True)
-        audit["results"] = [item.model_dump(mode="json") for item in results if item is not None]
+        persisted = await read_batch(runtime.store, dispatch_id)
+        host_records = {item["task_id"]: item for item in persisted.get("results", [])}
+        audit["results"] = [
+            {**host_records.get(item.task_id, {}), **item.model_dump(mode="json")}
+            for item in results
+            if item is not None
+        ]
         try:
             await write_batch(runtime.store, audit)
         except OSError:
@@ -504,12 +608,12 @@ class DispatchSubagentsTool(BaseTool[DispatchInput]):
         "source": "builtin",
         "effect": "model_call",
         "required_capabilities": ("model.call",),
-        "resources_write": ("dispatch",),
+        "resources_read": ("dispatch",),
         "parallelism": "resources",
     }
     description = (
         "派发 1-16 个相互独立的研究任务，使用有界并行、独立历史和独立输出目录。"
-        "需要已有项目和已领取的任务。返回有序的候选摘要、已核验的证据 ID 和真实文件。"
+        "需要已有研究计划和当前执行中的任务，普通研究会话与报告项目均可使用。返回有序的候选摘要、已核验的证据 ID 和真实文件。"
         "子代理不能写入主 MEMORY.md 或权威状态，不能运行 Shell 或递归派发；"
         "主 Agent 负责复核、登记发现并更新记忆。"
     )
@@ -521,10 +625,43 @@ class DispatchSubagentsTool(BaseTool[DispatchInput]):
     async def execute(self, arguments: DispatchInput, context: ToolExecutionContext) -> ToolResult:
         try:
             result = await dispatch_subagents(arguments.tasks, context, arguments.retry_dispatch_id)
+            from researchx.storage.content import read_object
+            from researchx.storage.database import current_database
+
+            runtime = context.metadata.get("research_runtime") or context.metadata.get(
+                "research_workspace_runtime"
+            )
+            specs = []
+            for child in result.results:
+                if child.status != "completed":
+                    continue
+                for source in child.candidate_sources:
+                    assert runtime is not None
+                    content = await read_object(
+                        current_database(), runtime.store.workspace_id, str(source["content_ref"])
+                    )
+                    specs.append(
+                        {
+                            **{
+                                key: value
+                                for key, value in source.items()
+                                if key not in {"content_ref", "content_hash", "collected_at"}
+                            },
+                            "content": content.decode(),
+                        }
+                    )
             return ToolResult(
                 output=result.model_dump_json(),
                 is_error=all(item.status != "completed" for item in result.results),
-                metadata={"dispatch_id": result.dispatch_id},
+                metadata={
+                    "dispatch_id": result.dispatch_id,
+                    "research_source_specs": specs,
+                    "dispatch_scope": (await read_batch(runtime.store, result.dispatch_id)).get(
+                        "scope"
+                    )
+                    if runtime
+                    else None,
+                },
             )
         except (ResearchError, ValueError, OSError) as exc:
             return ToolResult(output=str(exc), is_error=True)

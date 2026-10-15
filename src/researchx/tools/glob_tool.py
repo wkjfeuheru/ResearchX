@@ -27,6 +27,13 @@ class GlobTool(BaseTool[GlobToolInput]):
     """List files matching a glob pattern."""
 
     name = "glob"
+    contract = {
+        "name": name,
+        "source": "builtin",
+        "effect": "read_only",
+        "resources_read": ("*",),
+        "parallelism": "resources",
+    }
     description = "列出符合 Glob 模式的文件。"
     input_model = GlobToolInput
 
@@ -38,7 +45,7 @@ class GlobTool(BaseTool[GlobToolInput]):
         context = ToolExecutionContext.from_context(context)
         try:
             base = await context.resolve_path(".")
-            if await context.workspace_runtime():
+            if (await context.workspace_runtime()) or context.metadata.get("subagent_child"):
                 (await context.validate_search_pattern(arguments.pattern))
                 (await context.resolve_path(arguments.pattern))
                 if arguments.root:
@@ -46,7 +53,7 @@ class GlobTool(BaseTool[GlobToolInput]):
             root, pattern = _resolve_glob_request(base, arguments.root, arguments.pattern)
             (await context.resolve_path(root))
             matches = await _glob(root, pattern, limit=arguments.limit)
-            if await context.workspace_runtime():
+            if (await context.workspace_runtime()) or context.metadata.get("subagent_child"):
                 matches = [
                     str(path.relative_to(root))
                     for path in (await context.safe_search_paths(root / match for match in matches))

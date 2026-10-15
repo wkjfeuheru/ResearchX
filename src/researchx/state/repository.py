@@ -5,6 +5,7 @@ from typing import Callable, TYPE_CHECKING, cast
 from researchx.engine.metadata import ExecutionLease
 from researchx.state.models import ResearchMemory, TaskStatus, ArtifactSubmission
 from researchx.state.source_specs import SourceSpec
+from researchx.state.source_policy import collected_usage
 
 if TYPE_CHECKING:
     from researchx.state.store import ResearchStore
@@ -625,6 +626,7 @@ class ResearchRepository:
                     origin_id=execution.tool_use_id,
                     collected_at=now(),
                     published_at=spec.get("published_at"),
+                    event_at=spec.get("event_at"),
                     content_hash=digest,
                     snapshot=snapshot,
                     fragment=spec.get("fragment", False),
@@ -632,6 +634,9 @@ class ResearchRepository:
                     execution_id=execution.id,
                     task_revision=execution.task_revision,
                     plan_revision=execution.plan_revision,
+                    usage=collected_usage(execution.tool_name, spec),
+                    original_locator=spec.get("original_locator"),
+                    corrects_source_id=spec.get("corrects_source_id"),
                 )
                 memory.sources[source.id] = source
                 source_ids.append(source.id)
@@ -757,13 +762,27 @@ class ResearchRepository:
                 task.criterion_results.setdefault(criterion, []).append(artifact.id)
             return {"artifact_id": artifact.id, "file_id": artifact.file_id, "committed": True}
 
-        return await self._mutate(
+        receipt = await self._mutate(
             "submit_artifact",
             submission.model_dump(mode="json"),
             expected_revision,
             change,
             operation_id,
         )
+        if submission.kind == "report_draft":
+            from researchx.state.deliveries import DeliveryService
+
+            memory = await self.store.load()
+            objective = (
+                memory.objectives.get(memory.project.objective_revision) if memory.project else None
+            )
+            request = (
+                " ".join([objective.report_type, objective.subject, *objective.requirements])
+                if objective
+                else ""
+            )
+            await DeliveryService(self.store).freeze_report(str(receipt["artifact_id"]), request)
+        return receipt
 
     async def request_task_completion(
         self,

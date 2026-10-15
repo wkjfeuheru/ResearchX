@@ -1,9 +1,0 @@
-{
-  "name": "analysis-modeling",
-  "version": "1.0.0",
-  "display_name": "分析建模 Skill 包",
-  "description": "研究分析框架、结构化数据、确定性计算、预测建模和模型校验",
-  "category": "分析建模",
-  "enabled_by_default": true,
-  "example": "/financial-statement-analysis 分析公司财报"
-}

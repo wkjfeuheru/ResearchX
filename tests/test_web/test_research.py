@@ -13,6 +13,13 @@ async def test_research_progress_provenance_and_history_restore(workspace, monke
     client, app, _, _, cwd = workspace
     (cwd / "report.txt").write_text("报告：营业收入同比增长。", encoding="utf-8")
     sid = add_session(client, add_model(client))
+    from researchx.state.models import SourceUsage
+    await ResearchStore(cwd, sid).capture(
+        origin_id="public-test-report", kind="file", content=(cwd / "report.txt").read_text(),
+        locator=str(cwd / "report.txt"), usage=SourceUsage(category="public",
+            licence_status="pending", model_use_allowed=True, internal_export_allowed=True,
+            completeness="full"),
+    )
     models = []
     extracted = []
 
@@ -88,6 +95,13 @@ async def test_steering_cancels_old_run_then_commits_new_plan(workspace, monkeyp
     client, app, _, _, cwd = workspace
     (cwd / "report.txt").write_text("报告：营业收入同比增长。", encoding="utf-8")
     sid = add_session(client, add_model(client))
+    from researchx.state.models import SourceUsage
+    await ResearchStore(cwd, sid).capture(
+        origin_id="public-test-report", kind="file", content=(cwd / "report.txt").read_text(),
+        locator=str(cwd / "report.txt"), usage=SourceUsage(category="public",
+            licence_status="pending", model_use_allowed=True, internal_export_allowed=True,
+            completeness="full"),
+    )
     models = []
 
     def factory(settings):

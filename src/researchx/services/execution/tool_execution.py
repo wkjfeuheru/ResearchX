@@ -21,6 +21,7 @@ from researchx.hooks.safety import redact
 from researchx.tools.base import ToolExecutionContext, ToolResult
 from researchx.tools.contracts import resolve_contract
 from researchx.state.source_specs import SourceSpec
+from researchx.state.source_policy import collected_usage, may_enter_external_model
 from researchx.services.execution.operations import OperationStore
 from researchx.storage.content import persist_object, read_object
 from researchx.storage.database import current_database
@@ -75,7 +76,7 @@ async def _execute_impl(
         )
 
     try:
-        parsed_input = tool.input_model.model_validate(tool_input)
+        parsed_input = tool.parse_input(tool_input)
     except Exception as exc:
         log.warning("invalid input for %s: %s", tool_name, tool.validation_error_message(exc))
         return ToolResultBlock(
@@ -132,6 +133,20 @@ async def _execute_impl(
                 is_error=True,
                 content=str(exc),
                 result_metadata={"status": "denied", "error_code": "workspace_boundary"},
+            )
+    child_scope = (context.tool_metadata or {}).get("subagent_scope")
+    child_runtime = (context.tool_metadata or {}).get("research_workspace_runtime")
+    if child_scope and child_runtime:
+        from researchx.state.errors import ResearchError
+
+        try:
+            await child_runtime.validate_dispatch_scope(child_scope)
+        except ResearchError as exc:
+            return ToolResultBlock(
+                tool_use_id=tool_use_id,
+                content=str(exc),
+                is_error=True,
+                result_metadata={"status": "denied", "error_code": "parent_scope_changed"},
             )
     _command = _extract_permission_command(tool_input, parsed_input)
     log.debug(
@@ -217,35 +232,31 @@ async def _execute_impl(
     replay = await service.begin(context, tool, parsed_input, tool_use_id, tool_cwd)
     if replay is not None:
         return replay
-    if project_mode:
-        assert runtime is not None
-        defect = await runtime.guard_tool(tool_name, tool_input)
-        if defect:
-            return ToolResultBlock(tool_use_id=tool_use_id, content=defect, is_error=True)
-    if (
-        store is not None
-        and not project_mode
-        and (await store.load()).research_state.replan_required
-        and tool_name not in {"research_memory", "ask_user_question", "skill"}
-    ):
-        return ToolResultBlock(
-            tool_use_id=tool_use_id,
-            content="研究需要新计划。请先使用 research_memory 更新上下文并调用 create_plan，再执行其他工具。",
-            is_error=True,
+    if store is not None:
+        from researchx.research_application import ResearchApplication
+
+        async def guard(name: str) -> str | None:
+            if not project_mode or runtime is None:
+                return None
+            return await runtime.guard_tool(name, tool_input)
+
+        admission = await ResearchApplication(store).admit_tool(
+            tool_name, project_mode=project_mode, guard=guard
         )
-    if (
-        store is not None
-        and not project_mode
-        and tool_name not in {"research_memory", "ask_user_question", "skill"}
-    ):
-        memory = await store.load()
-        plan = memory.plans.get(memory.research_state.current_plan_id or "")
-        if plan and not memory.research_state.current_task_id:
+        if not admission.allowed:
+            return ToolResultBlock(tool_use_id=tool_use_id, content=admission.message, is_error=True)
+    if tool_name == "dispatch_subagents" and store is not None:
+        from researchx.state.runtime import ResearchAgentRuntime
+        from researchx.state.errors import ResearchError
+
+        try:
+            ResearchAgentRuntime.dispatch_scope(await store.load())
+        except ResearchError as exc:
             return ToolResultBlock(
                 tool_use_id=tool_use_id,
+                content=str(exc),
                 is_error=True,
-                content="开始采集或计算前先启动当前研究任务：使用真实任务 ID 和 in_progress 状态调用 research_memory.update_task，"
-                "然后执行任务并更新结果。不要在所有任务仍为 pending 时收集整个计划的资料。",
+                result_metadata={"status": "denied", "error_code": "research_task_required"},
             )
     if context.hook_executor is not None:
         service.started_hooks = context.hook_executor.has_effects(HookEvent.PRE_TOOL_USE, tool_name)
@@ -322,7 +333,152 @@ async def _execute_impl(
     if baseline:
         assert runtime is not None
         result = await runtime.commit_planning_result(tool_name, result, baseline)
+    if store is not None and tool_name == "bash" and "returncode" in result.metadata:
+        # A shell can print any workspace file. Execution permission is not a
+        # source licence; consume registered, authorised artifacts instead of
+        # forwarding opaque stdout/stderr to an external model.
+        result = replace(
+            result,
+            output=(
+                f"Shell 已结束，退出码：{result.metadata['returncode']}。"
+                "原始输出的来源使用范围未经确认，未送入模型。请读取已登记且获准使用的计算产物。"
+            ),
+            metadata={**result.metadata, "source_use_status": "unclassified_output_withheld"},
+        )
     elapsed = time.monotonic() - t0
+    audit_store = store
+    parent_runtime = (context.tool_metadata or {}).get("research_workspace_runtime")
+    if audit_store is None and parent_runtime is not None:
+        audit_store = parent_runtime.store
+    if audit_store is not None and tool_name in {"web_search", "web_fetch"}:
+        from researchx.storage.schema import collection_attempts
+        from sqlalchemy.dialects.postgresql import insert
+
+        classification = result.metadata.get("source_classification", {})
+        categories = (
+            classification.get("categories", []) if isinstance(classification, dict) else []
+        )
+        channel = (
+            str(result.metadata.get("search_category") or "all")
+            if tool_name == "web_search"
+            else str(categories[0])
+            if categories
+            else "unclassified"
+        )
+        window = (context.tool_metadata or {}).get("business_window", {})
+        async with audit_store.transaction() as db:
+            await db.execute(
+                insert(collection_attempts)
+                .values(
+                    workspace_id=audit_store.workspace_id,
+                    session_id=audit_store.session_id,
+                    attempt_id=hashlib.sha256(
+                        f"{context.execution_session_id}:{tool_use_id}".encode()
+                    ).hexdigest(),
+                    channel=channel,
+                    scope=str(result.metadata.get("search_scope") or tool_name),
+                    query_hash=hashlib.sha256(
+                        json.dumps(tool_input, sort_keys=True, ensure_ascii=False).encode()
+                    ).hexdigest(),
+                    outcome=str(
+                        result.metadata.get("outcome")
+                        or ("error" if result.is_error else "success")
+                    ),
+                    errors=list(
+                        result.metadata.get("error_codes")
+                        or ([result.error_code or "tool_error"] if result.is_error else [])
+                    ),
+                    window_start=window.get("start"),
+                    window_end=window.get("end"),
+                    created_at=time.time(),
+                )
+                .on_conflict_do_nothing()
+            )
+    operation = tool_input.get("operation") if tool_name == "research_memory" else None
+    if (
+        not result.is_error
+        and isinstance(operation, dict)
+        and operation.get("action") == "read"
+        and operation.get("include_content")
+        and store is not None
+    ):
+        memory = await store.load()
+        source_ids = operation.get("ids", [])
+        if isinstance(source_ids, list) and any(
+            key in memory.sources and not may_enter_external_model(memory.sources[key].usage)
+            for key in source_ids
+            if isinstance(key, str)
+        ):
+            result = replace(
+                result,
+                output="来源授权尚未确认，不能向当前模型读取原文。",
+                is_error=True,
+                error_code="source_use_not_authorized",
+            )
+    specs_to_validate = result.metadata.get("research_source_specs")
+    if specs_to_validate and any(
+        not isinstance(spec, dict)
+        or not isinstance(spec.get("content"), str)
+        or spec.get("kind", "tool")
+        not in {"user", "tool", "web", "file", "search", "mcp", "calculation"}
+        for spec in specs_to_validate
+    ):
+        if execution:
+            assert runtime is not None
+            await runtime.repository.cancel_execution(execution["id"], "Invalid source contract")
+        return ToolResultBlock(
+            tool_use_id=tool_use_id,
+            content="Tool result rejected: invalid provenance or schema",
+            is_error=True,
+            result_metadata={
+                "status": "blocked",
+                "error_code": "invalid_provenance",
+                **({"execution_id": execution["id"]} if execution else {}),
+            },
+        )
+    if (
+        (store is not None or (context.tool_metadata or {}).get("subagent_child"))
+        and not result.is_error
+        and result.metadata.get("research_source_specs")
+    ):
+        unapproved = [
+            spec
+            for spec in result.metadata.get("research_source_specs", [])
+            if not may_enter_external_model(collected_usage(tool_name, spec))
+        ]
+        if unapproved:
+            result = replace(
+                result,
+                output="资料使用范围尚未确认；当前模型不能接收此来源内容。请先完成授权分类。",
+                is_error=True,
+                error_code="source_use_not_authorized",
+                metadata={
+                    key: value
+                    for key, value in result.metadata.items()
+                    if key != "research_source_specs"
+                },
+            )
+    candidate_capture = (context.tool_metadata or {}).get("record_candidate_sources")
+    if candidate_capture and not result.is_error:
+        specs = result.metadata.get("research_source_specs")
+        if specs:
+            await candidate_capture(
+                [
+                    {
+                        **spec,
+                        "__host_usage": collected_usage(tool_name, spec).model_dump(mode="json"),
+                    }
+                    for spec in cast(list[dict[str, object]], specs)
+                ]
+            )
+            result = replace(
+                result,
+                metadata={
+                    key: value
+                    for key, value in result.metadata.items()
+                    if key != "research_source_specs"
+                },
+            )
     if store is not None and (
         execution
         or tool_name
@@ -380,22 +536,45 @@ async def _execute_impl(
             if not receipt["accepted"]:
                 result = replace(result, output=rejection, is_error=True)
         else:
-            for index, spec in enumerate(source_specs):
-                sources.append(
-                    (
-                        await store.capture(
-                            origin_id=tool_use_id,
-                            index=index,
-                            content=spec["content"],
-                            kind=spec.get("kind", "tool"),
-                            title=spec.get("title", tool_name),
-                            locator=spec.get("locator", f"tool:{tool_name}:{tool_use_id}"),
-                            fragment=spec.get("fragment", False),
-                            published_at=spec.get("published_at"),
-                            is_error=result.is_error,
-                        )
-                    ).id
+            async with store.transaction():
+                dispatch_scope = (
+                    result.metadata.get("dispatch_scope")
+                    if tool_name == "dispatch_subagents"
+                    else None
                 )
+                if dispatch_scope and runtime:
+                    from researchx.state.errors import ResearchError
+
+                    try:
+                        await runtime.validate_dispatch_scope(dispatch_scope)
+                    except ResearchError as exc:
+                        source_specs = []
+                        result = replace(
+                            result,
+                            output=str(exc),
+                            is_error=True,
+                            error_code="parent_scope_changed",
+                        )
+                for index, spec in enumerate(source_specs):
+                    sources.append(
+                        (
+                            await store.capture(
+                                origin_id=tool_use_id,
+                                index=index,
+                                content=spec["content"],
+                                kind=spec.get("kind", "tool"),
+                                title=spec.get("title", tool_name),
+                                locator=spec.get("locator", f"tool:{tool_name}:{tool_use_id}"),
+                                fragment=spec.get("fragment", False),
+                                published_at=spec.get("published_at"),
+                                event_at=spec.get("event_at"),
+                                is_error=result.is_error,
+                                usage=collected_usage(tool_name, spec),
+                                original_locator=spec.get("original_locator"),
+                                corrects_source_id=spec.get("corrects_source_id"),
+                            )
+                        ).id
+                    )
 
         result = replace(
             result,
@@ -447,12 +626,22 @@ async def _execute_impl(
                 skills.append(skill_name)
     (await service.finish(tool_result))
     if context.hook_executor is not None:
+        hook_output = tool_result.content
+        if store is not None:
+            policy_memory = await store.load()
+            if any(
+                key in policy_memory.sources
+                and policy_memory.sources[key].kind != "user"
+                and not may_enter_external_model(policy_memory.sources[key].usage)
+                for key in tool_result.result_metadata.get("research_sources", [])
+            ):
+                hook_output = "来源使用范围尚未确认；不向 Hook 模型提供原始内容。"
         post = await context.hook_executor.execute(
             HookEvent.POST_TOOL_USE,
             {
                 "tool_name": tool_name,
                 "tool_input": tool_input,
-                "tool_output": tool_result.content,
+                "tool_output": hook_output,
                 "tool_is_error": tool_result.is_error,
                 "event": HookEvent.POST_TOOL_USE.value,
             },
@@ -521,6 +710,16 @@ class ToolExecutionService:
                     )
             raise
         except Exception as exc:
+            from researchx.storage.turns import CheckpointError
+
+            if isinstance(exc, CheckpointError):
+                raise
+            if (
+                context.tool_metadata
+                and context.tool_metadata.get("checkpoint_writer")
+                and isinstance(exc, (DBAPIError, PoolTimeoutError))
+            ):
+                raise CheckpointError("操作账本保存失败；已停止后续执行") from None
             if not self.claimed and isinstance(exc, (DBAPIError, PoolTimeoutError)):
                 sqlstate = getattr(getattr(exc, "orig", None), "sqlstate", None)
                 busy = isinstance(exc, PoolTimeoutError) or sqlstate in {
@@ -590,7 +789,7 @@ class ToolExecutionService:
         # Unknown resources serialize. Explicit file resources participate in read/write conflicts.
         def resources(items: tuple[str, ...]) -> list[str]:
             return [
-                str((Path(cwd) / getattr(arguments, item)).resolve())
+                str((Path(cwd) / Path(getattr(arguments, item)).expanduser()).resolve())
                 if item in {"path", "image_path"} and getattr(arguments, item, None)
                 else item
                 for item in items
@@ -614,6 +813,8 @@ class ToolExecutionService:
         # Orchestration must not hold its children's resource lock while awaiting them.
         if metadata.get("subagent_child"):
             scope += ":child:" + str(metadata.get("subagent_output_dir", ""))
+            if metadata.get("parent_operation_id"):
+                declared["parent_operation"] = [metadata["parent_operation_id"]]
         (await self.ledger.recover(session=session, scope=scope))
         digest = hashlib.sha256(
             json.dumps(arguments.model_dump(mode="json"), sort_keys=True).encode()
@@ -632,6 +833,12 @@ class ToolExecutionService:
             effect="mixed" if effect_hook else self.contract.effect,
             resources=declared,
         )
+        writer = metadata.get("checkpoint_writer")
+        if writer is not None:
+            checkpoint_scope = str(context.cwd.resolve())
+            if metadata.get("subagent_child"):
+                checkpoint_scope += ":child:" + str(metadata.get("subagent_output_dir", ""))
+            await writer.record_operation(self.operation, scope=checkpoint_scope)
         operation_id = self.operation["operation_id"]
         deadline = time.monotonic() + self.claim_wait_seconds
         delay = 0.02
@@ -852,60 +1059,110 @@ async def recover_messages(
     if store and runtime and (await store.load()).project:
         cwd = runtime._workspace_path(runtime.repository._project((await store.load())))
     scope = str(cwd.resolve())
+    if metadata.get("subagent_child"):
+        scope += ":child:" + str(metadata.get("subagent_output_dir", ""))
     ledger = OperationStore(store.cwd if store else cwd, directory=root)
     (await ledger.recover(session=session, scope=scope))
-    if not messages or not messages[-1].tool_uses:
-        return messages
-    results = []
-    found_receipt = False
-    for call in messages[-1].tool_uses:
-        identity = hashlib.sha256(json.dumps([session, scope, call.id]).encode()).hexdigest()
-        try:
-            receipt = await ledger.get(identity, session=session, scope=scope)
-        except ValueError:
-            results.append(
-                ToolResultBlock(
+    recovered = []
+    skip = False
+    for index, message in enumerate(messages):
+        if skip:
+            skip = False
+            continue
+        recovered.append(message)
+        if not message.tool_uses:
+            continue
+        following = messages[index + 1] if index + 1 < len(messages) else None
+        paired = (
+            {
+                result.tool_use_id
+                for result in following.content
+                if isinstance(result, ToolResultBlock)
+            }
+            if following and following.role == "user"
+            else set()
+        )
+        results = []
+        for call in message.tool_uses:
+            if call.id in paired:
+                continue
+            from researchx.services.execution.operations import operation_identity
+
+            mapping = metadata.get("operation_mappings", {}).get(call.id)
+            call_scope = mapping["scope"] if mapping else scope
+            identity = operation_identity(ledger.workspace, session, call_scope, call.id)
+            if mapping and identity != mapping["operation_id"]:
+                raise ValueError("Invalid operation recovery mapping")
+            try:
+                await ledger.recover(session=session, scope=call_scope)
+                receipt = await ledger.get(identity, session=session, scope=call_scope)
+                if mapping and (
+                    receipt["input_digest"] != mapping["input_digest"]
+                    or receipt["tool"] != call.name
+                ):
+                    raise ValueError("Operation receipt does not match checkpoint")
+            except ValueError:
+                results.append(
+                    ToolResultBlock(
+                        tool_use_id=call.id,
+                        is_error=True,
+                        content="No durable receipt exists. Inspect the operation before explicitly resubmitting.",
+                    )
+                )
+                continue
+            if receipt["status"] == "succeeded" and receipt["result_ref"]:
+                result = await _receipt_result(receipt, call.id)
+                result.result_metadata["replayed_receipt"] = True
+            else:
+                result = ToolResultBlock(
                     tool_use_id=call.id,
                     is_error=True,
-                    content="No durable receipt exists. Inspect the operation before explicitly resubmitting.",
+                    content=f"Execution interrupted. Recovered operation {identity}: {receipt['status']}. Reconciliation is required before repeating side effects.",
+                    result_metadata={
+                        "operation_id": identity,
+                        "status": receipt["status"],
+                        "error_code": "recovery_required",
+                    },
                 )
-            )
-            continue
-        found_receipt = True
-        if receipt["status"] == "succeeded" and receipt["result_ref"]:
-            result = await _receipt_result(receipt, call.id)
-            result.result_metadata["replayed_receipt"] = True
-        else:
-            result = ToolResultBlock(
-                tool_use_id=call.id,
-                is_error=True,
-                content=f"Execution interrupted. Recovered operation {identity}: {receipt['status']}. Reconciliation is required before repeating side effects.",
-                result_metadata={
-                    "operation_id": identity,
-                    "status": receipt["status"],
-                    "error_code": "recovery_required",
-                },
-            )
-        if store is not None:
-            sources = [
-                source
-                for source in (await store.load()).sources.values()
-                if source.origin_id == call.id
-            ]
-            if sources:
-                source_ids = [source.id for source in sources]
-                result.content += (
-                    f"\nRetained research sources: {source_ids}; read them before continuing."
+            if store is not None:
+                sources = [
+                    source
+                    for source in (await store.load()).sources.values()
+                    if source.origin_id == call.id
+                ]
+                if sources:
+                    source_ids = [source.id for source in sources]
+                    result.content += (
+                        f"\nRetained research sources: {source_ids}; read them before continuing."
+                    )
+                    result.result_metadata["research_sources"] = source_ids
+                    if receipt["effect"] == "read_only" and receipt["status"] != "succeeded":
+                        result.is_error = all(source.is_error for source in sources)
+            results.append(result)
+        if results:
+            if following is not None and following.role == "user":
+                existing = {
+                    result.tool_use_id: result
+                    for result in following.content
+                    if isinstance(result, ToolResultBlock)
+                }
+                existing.update({result.tool_use_id: result for result in results})
+                other = [
+                    block for block in following.content if not isinstance(block, ToolResultBlock)
+                ]
+                recovered.append(
+                    following.model_copy(
+                        update={
+                            "content": [existing[call.id] for call in message.tool_uses] + other
+                        }
+                    )
                 )
-                result.result_metadata["research_sources"] = source_ids
-                if receipt["effect"] == "read_only" and receipt["status"] != "succeeded":
-                    result.is_error = all(source.is_error for source in sources)
-        results.append(result)
-    return (
-        [*messages, ConversationMessage(role="user", content=[item for item in results])]
-        if found_receipt
-        else messages
-    )
+                skip = True
+            else:
+                recovered.append(
+                    ConversationMessage(role="user", content=[block for block in results])
+                )
+    return recovered
 
 
 async def _receipt_result(receipt: dict[str, Any], call: str) -> ToolResultBlock:

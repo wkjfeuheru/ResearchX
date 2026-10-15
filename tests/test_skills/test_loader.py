@@ -22,7 +22,7 @@ def test_load_skill_registry_includes_packaged_plugin(tmp_path: Path, monkeypatc
     assert "earnings-forecast" in names
 
     forecast = registry.get("earnings-forecast")
-    assert forecast is not None and forecast.source == "plugin"
+    assert forecast is not None and forecast.source == "builtin"
     assert forecast.content is None
 
 

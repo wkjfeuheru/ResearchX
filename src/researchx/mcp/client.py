@@ -5,7 +5,6 @@ from __future__ import annotations
 from pydantic import AnyUrl
 from researchx.services.execution.async_timeout import timeout as async_timeout
 import asyncio
-import contextlib
 from contextlib import AsyncExitStack
 from typing import TypeVar, Coroutine, Any
 import httpx
@@ -59,6 +58,8 @@ class McpClientManager:
         self._stacks: dict[str, AsyncExitStack] = {}
         self._owners: dict[str, asyncio.Task[None]] = {}
         self._shutdown: dict[str, asyncio.Event] = {}
+        self._cleanup_errors: list[BaseException] = []
+        self._close_lock = asyncio.Lock()
 
     async def connect_all(self) -> None:
         """Connect all configured MCP servers supported by the current build."""
@@ -137,6 +138,7 @@ class McpClientManager:
         except BaseException as exc:
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 raise
+            self._cleanup_errors.append(exc)
 
     def _mark_connection_failed(
         self,
@@ -157,19 +159,31 @@ class McpClientManager:
 
     async def close(self) -> None:
         """Close all active MCP sessions."""
-        for signal in self._shutdown.values():
-            signal.set()
-        if self._owners:
-            await asyncio.gather(*self._owners.values(), return_exceptions=True)
-        self._owners.clear()
-        self._shutdown.clear()
-        # MCP transports enter AnyIO cancel scopes in connection order. They
-        # must leave in reverse order or cleanup can cancel the next Web run.
-        for stack in reversed(list(self._stacks.values())):
-            with contextlib.suppress(RuntimeError, asyncio.CancelledError):
-                await stack.aclose()
-        self._stacks.clear()
-        self._sessions.clear()
+        async with self._close_lock:
+            for signal in self._shutdown.values():
+                signal.set()
+            owners = set(self._owners.values())
+            if owners:
+                _, pending = await asyncio.wait(owners, timeout=10)
+                for owner in pending:
+                    owner.cancel()
+                if pending:
+                    _, pending = await asyncio.wait(pending, timeout=3)
+                if pending:
+                    raise RuntimeError("MCP connection owners did not stop")
+                for owner in owners:
+                    error = owner.exception() if not owner.cancelled() else None
+                    if error is not None:
+                        self._cleanup_errors.append(error)
+            self._owners.clear()
+            self._shutdown.clear()
+            for stack in reversed(list(self._stacks.values())):
+                await self._close_failed_stack(stack)
+            self._stacks.clear()
+            self._sessions.clear()
+            if self._cleanup_errors:
+                errors, self._cleanup_errors = self._cleanup_errors, []
+                raise RuntimeError("MCP cleanup failed") from errors[0]
 
     def list_statuses(self) -> list[McpConnectionStatus]:
         """Return statuses for all configured servers."""

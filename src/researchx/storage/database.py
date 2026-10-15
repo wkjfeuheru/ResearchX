@@ -17,7 +17,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-SCHEMA_REVISION = "0003_child_sessions"
+SCHEMA_REVISION = "0007_research_assets"
 
 # Request/task dependency, not a storage singleton: the owner closes its pool.
 _bound_database: ContextVar[Database | None] = ContextVar("researchx_database", default=None)

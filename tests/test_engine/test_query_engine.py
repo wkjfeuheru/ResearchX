@@ -1376,7 +1376,7 @@ async def test_parallel_fast_result_is_emitted_before_slow_tool_settles(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_query_engine_sanitizes_dangling_tool_use_before_new_prompt(tmp_path: Path):
+async def test_query_engine_recovers_missing_tool_receipt_before_new_prompt(tmp_path: Path):
     engine = QueryEngine(
         api_client=StaticApiClient("fresh reply"),
         tool_registry=ToolRegistry(),
@@ -1399,15 +1399,19 @@ async def test_query_engine_sanitizes_dangling_tool_use_before_new_prompt(tmp_pa
 
     assert isinstance(events[-1], AssistantTurnComplete)
     assert events[-1].message.text == "fresh reply"
-    assert not any(
+    assert any(
         isinstance(block, ToolUseBlock) and block.id == "call_missing_output"
         for message in engine.messages
         for block in message.content
     )
+    results = [block for message in engine.messages for block in message.content if isinstance(block, ToolResultBlock) and block.tool_use_id == "call_missing_output"]
+    assert len(results) == 1 and results[0].is_error
+    assert "No durable receipt exists" in results[0].content
+    assert not any(isinstance(event, ToolExecutionStarted) for event in events)
 
 
 @pytest.mark.asyncio
-async def test_query_engine_continue_pending_sanitizes_dangling_tool_use(tmp_path: Path):
+async def test_query_engine_continue_pending_recovers_missing_tool_receipt(tmp_path: Path):
     engine = QueryEngine(
         api_client=StaticApiClient("continued reply"),
         tool_registry=ToolRegistry(),
@@ -1430,11 +1434,15 @@ async def test_query_engine_continue_pending_sanitizes_dangling_tool_use(tmp_pat
 
     assert isinstance(events[-1], AssistantTurnComplete)
     assert events[-1].message.text == "continued reply"
-    assert not any(
+    assert any(
         isinstance(block, ToolUseBlock) and block.id == "call_missing_output"
         for message in engine.messages
         for block in message.content
     )
+    results = [block for message in engine.messages for block in message.content if isinstance(block, ToolResultBlock) and block.tool_use_id == "call_missing_output"]
+    assert len(results) == 1 and results[0].is_error
+    assert "No durable receipt exists" in results[0].content
+    assert not any(isinstance(event, ToolExecutionStarted) for event in events)
 
 
 @pytest.mark.asyncio

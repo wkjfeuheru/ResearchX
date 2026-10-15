@@ -140,7 +140,7 @@ async def test_runtime_startup_failure_closes_provider_and_retains_task(tmp_path
 
 @pytest.mark.asyncio
 async def test_runtime_closes_provider_when_end_hook_fails(monkeypatch):
-    from researchx.runtime import close_runtime
+    from researchx.runtime import RuntimeBundle, close_runtime
     from researchx.sandbox import session
 
     async def no_sandbox():
@@ -151,7 +151,10 @@ async def test_runtime_closes_provider_when_end_hook_fails(monkeypatch):
 
     monkeypatch.setattr(session, "stop_docker_sandbox", no_sandbox)
     provider = Provider()
-    bundle = SimpleNamespace(
+    bundle = RuntimeBundle(
+        engine=SimpleNamespace(),
+        tool_registry=None,
+        session_started=True,
         cwd="/workspace",
         session_id="test-close",
         runtime_id="test-close-runtime",

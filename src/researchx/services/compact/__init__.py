@@ -890,6 +890,16 @@ async def compact_conversation(
     from researchx.api.client import ApiMessageRequest, ApiMessageCompleteEvent
 
     original = [m.model_copy(deep=True) for m in messages]
+    source_ids: set[str] = set()
+    policy_store = (carryover_metadata or {}).get("research_store")
+    if policy_store is not None:
+        from researchx.state.source_policy import history_use_gap, history_source_ids
+
+        policy_memory = await policy_store.load()
+        gap = history_use_gap(policy_memory, original)
+        if gap:
+            raise ContextBudgetError(gap)
+        source_ids = history_source_ids(policy_memory, original)
     before = _conversation_budget(
         original,
         api_client=api_client,
@@ -1063,6 +1073,8 @@ async def compact_conversation(
         hook_results=hook_attachments,
         compact_metadata=metadata,
     )
+    for summary_message in result.summary_messages:
+        summary_message.research_citations = {"source_ids": sorted(source_ids)}
     candidate = build_post_compact_messages(result)
     (await _refresh_runtime(candidate, runtime_context_provider, runtime_snapshot_provider))
     # Keep any refreshed runtime item in the exact candidate we validate and return.

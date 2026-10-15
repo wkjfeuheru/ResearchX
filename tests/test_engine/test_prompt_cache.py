@@ -272,14 +272,18 @@ async def test_cancel_during_tool_loop_retains_results(tmp_path):
 
     stream = engine.submit_message("list")
     async for event in stream:
-        # Interrupt before execution; sanitizer removes unmatched tool calls.
+        # Interrupt before execution.
         if isinstance(event, AssistantTurnComplete):
             break
     await stream.aclose()
     before = engine.messages[0].runtime_context
     _ = [event async for event in engine.continue_pending()]
     assert engine.messages[0].runtime_context == before
-    assert not any(m.tool_uses for m in client.requests[-1].messages)
+    messages = client.requests[-1].messages
+    use_index = next(i for i, message in enumerate(messages) if message.tool_uses)
+    result = messages[use_index + 1].content[0]
+    assert isinstance(result, ToolResultBlock) and result.tool_use_id == "read"
+    assert result.is_error and "No durable receipt exists" in result.content
 
 
 def test_tools_deterministic_order():

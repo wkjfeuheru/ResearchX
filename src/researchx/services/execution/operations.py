@@ -106,9 +106,7 @@ class OperationStore:
         effect: str,
         resources: dict[str, list[str]],
     ) -> dict[str, Any]:
-        operation = hashlib.sha256(
-            json.dumps([self.workspace, session, scope, call]).encode()
-        ).hexdigest()
+        operation = operation_identity(self.workspace, session, scope, call)
         run = f"{self.workspace}:{run}"
         stamp = time.time()
         async with self.transaction() as db:
@@ -209,7 +207,6 @@ class OperationStore:
                 await db.execute(
                     select(s.tool_operations).where(
                         s.tool_operations.c.workspace_id == self.workspace,
-                        s.tool_operations.c.scope == row["scope"],
                         s.tool_operations.c.status.in_(["uncertain", "partial"]),
                     )
                 )
@@ -330,7 +327,6 @@ class OperationStore:
             conflicts = await db.execute(
                 select(s.tool_operations).where(
                     s.tool_operations.c.workspace_id == self.workspace,
-                    s.tool_operations.c.scope == row["scope"],
                     s.tool_operations.c.status.in_(["running", "uncertain", "partial"]),
                 )
             )
@@ -646,6 +642,19 @@ def _conflicts(a: dict[str, list[str]], b: dict[str, list[str]]) -> bool:
 
 
 def _operation_conflicts(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    # A trusted dispatch child starts only after the parent's PRE hooks finish.
+    # The parent awaits its children, so retaining its orchestration reservation
+    # against those exact children would deadlock. Siblings still conflict normally.
+    def dispatch_parent(parent: dict[str, Any], child: dict[str, Any]) -> bool:
+        return bool(
+            parent["tool"] == "dispatch_subagents"
+            and parent["status"] == "running"
+            and child["resources"].get("parent_operation") == [parent["operation_id"]]
+        )
+
+    if dispatch_parent(a, b) or dispatch_parent(b, a):
+        return False
+
     # Unresolved writes prohibit overlapping mutations, not diagnostics. A PRE
     # effect changes the ledger effect to mixed and therefore cannot use this.
     if (a["status"] in {"uncertain", "partial"} and b["effect"] == "read_only") or (
@@ -666,3 +675,7 @@ def _operation_conflicts(a: dict[str, Any], b: dict[str, Any]) -> bool:
     if a["session_id"] != b["session_id"] and (session_control(a) or session_control(b)):
         return False
     return _conflicts(a["resources"], b["resources"])
+
+
+def operation_identity(workspace: str, session: str, scope: str, call: str) -> str:
+    return hashlib.sha256(json.dumps([workspace, session, scope, call]).encode()).hexdigest()

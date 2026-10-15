@@ -8,8 +8,6 @@ from pathlib import Path
 from researchx.config.settings import Settings
 from researchx.mcp.config import load_mcp_server_configs
 from researchx.mcp.types import McpResourceInfo, McpStdioServerConfig, McpToolInfo
-from researchx.plugins.types import LoadedPlugin
-from researchx.plugins.schemas import PluginManifest
 from researchx.tools import create_research_tool_registry
 from researchx.tools.base import ToolExecutionContext
 
@@ -36,17 +34,9 @@ def test_load_mcp_server_configs_merges_plugins():
     settings = Settings(
         mcp_servers={"local": McpStdioServerConfig(command="python", args=["server.py"])}
     )
-    plugin = LoadedPlugin(
-        manifest=PluginManifest(name="demo", version="1.0.0"),
-        path=Path("/tmp/demo"),
-        enabled=True,
-        mcp_servers={"remote": McpStdioServerConfig(command="python", args=["remote.py"])},
-    )
-
-    servers = load_mcp_server_configs(settings, [plugin])
-
-    assert "local" in servers
-    assert "demo:remote" in servers
+    servers = load_mcp_server_configs(settings)
+    assert servers == settings.mcp_servers
+    assert servers is not settings.mcp_servers
 
 
 async def test_mcp_tools_are_registered():

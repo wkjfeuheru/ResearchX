@@ -16,10 +16,10 @@ from tempfile import TemporaryDirectory
 def main() -> int:
     root = Path(__file__).resolve().parents[1]
     package = root / "src" / "researchx"
-    bundled = package / "plugins" / "bundled"
+    bundled = package / "skills" / "bundled"
     with TemporaryDirectory(prefix="researchx-types-") as temporary:
         view_root = Path(temporary)
-        view = view_root / "researchx/plugins/bundled"
+        view = view_root / "researchx/skills/bundled"
         for source in bundled.rglob("*.py"):
             relative = source.relative_to(bundled)
             target = view.joinpath(*(part.replace("-", "_") for part in relative.parts))
@@ -36,7 +36,7 @@ def main() -> int:
             ),
         }
         base = [sys.executable, "-m", "mypy", "--strict", "--explicit-package-bases", *sys.argv[1:]]
-        groups = [[str(package), "--exclude", "plugins/bundled"]]
+        groups = [[str(package), "--exclude", "skills/bundled"]]
         # The normalized namespace gives every bundled module a distinct name, so
         # check the whole tree together rather than rechecking imports per Skill.
         groups.append([str(view_root / "researchx")])

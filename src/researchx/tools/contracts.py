@@ -21,7 +21,7 @@ class ToolContract(BaseModel):
     name: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_-]{0,127}$")
     version: str = Field(default="1", min_length=1)
     description: str = ""
-    source: Literal["builtin", "plugin", "mcp", "legacy"] = "legacy"
+    source: Literal["builtin", "mcp", "legacy"] = "legacy"
     input_schema: dict[str, Any] = Field(default_factory=dict)
     output_schema: dict[str, Any] | None = None
     output_model: type[BaseModel] | None = Field(default=None, exclude=True)
@@ -68,7 +68,7 @@ class ToolContract(BaseModel):
 
 def resolve_contract(tool: BaseTool[Any], arguments: BaseModel | None = None) -> ToolContract:
     declared = tool.execution_contract(arguments)
-    schema = tool.input_model.model_json_schema()
+    schema = tool.input_schema()
     if declared is not None:
         contract = ToolContract.model_validate(declared)
         if contract.retry_mode == "idempotency_key":
@@ -79,7 +79,7 @@ def resolve_contract(tool: BaseTool[Any], arguments: BaseModel | None = None) ->
         if contract.name != tool.name:
             raise ValueError("Tool contract name does not match registered name")
         if contract.input_schema and contract.input_schema != schema:
-            raise ValueError("Contract input schema must derive from input_model")
+            raise ValueError("Contract input schema must derive from input_schema")
         return contract.model_copy(update={"input_schema": schema})
     return ToolContract(
         name=tool.name,

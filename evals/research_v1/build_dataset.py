@@ -740,7 +740,7 @@ def build(pdf_dir: Path) -> list[EvalCase]:
                 )
                 if category == "cross" and material == "live" and i == 5:
                     path.tool_groups = [["read_file", "web_fetch", "web_search", "bash"]]
-                disabled_plugins = []
+                disabled_skills = []
                 if category == "cross":
                     skill_requirements: dict[int, tuple[Category, ...]] = {
                         0: ("financial", "digest"),
@@ -763,7 +763,16 @@ def build(pdf_dir: Path) -> list[EvalCase]:
                     path.skills = [SKILLS[k][0] for k in needs]
                     path.scripts = [SKILLS[k][1] for k in needs]
                     if i == 14:
-                        disabled_plugins = ["analysis-modeling", "report-generation"]
+                        disabled_skills = [
+                            "financial-statement-analysis",
+                            "company-event-monitor",
+                            "research-report-digest",
+                            "earnings-forecast",
+                            "deep-investment-report",
+                            "financial-commentary",
+                            "industry-commentary",
+                            "industry-deep-dive",
+                        ]
                 if "deep-investment-report" in path.skills:
                     path.skills.append(FORECAST_SKILL[0])
                     path.scripts.append(FORECAST_SKILL[1])
@@ -875,7 +884,7 @@ def build(pdf_dir: Path) -> list[EvalCase]:
                         cutoff=cutoff,
                         assets=assets,
                         live_urls=urls,
-                        disabled_plugins=disabled_plugins,
+                        disabled_skills=disabled_skills,
                         requirements=requirements,
                         reference_facts=facts,
                         path=path,

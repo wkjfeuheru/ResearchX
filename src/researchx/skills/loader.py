@@ -1,4 +1,4 @@
-"""Skill loading from plugins, user, compatibility, and project directories."""
+"""Skill loading from bundled, user, compatibility, and project directories."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from researchx.config import Settings
 import logging
 from pathlib import Path
 from typing import Iterable
+from dataclasses import replace
 from pydantic import ValidationError
 from researchx.config.paths import get_config_dir
 from researchx.config.settings import load_settings
@@ -32,6 +33,7 @@ class SkillHeader(TypedDict):
 
 
 logger = logging.getLogger(__name__)
+BUNDLED_SKILLS_DIR = Path(__file__).parent / "bundled"
 
 _USER_COMPAT_SKILL_DIRS = (
     (".claude", "skills"),
@@ -63,27 +65,34 @@ def load_skill_registry(
     cwd: str | Path | None = None,
     *,
     extra_skill_dirs: Iterable[str | Path] | None = None,
-    extra_plugin_roots: Iterable[str | Path] | None = None,
     settings: Settings | None = None,
+    include_disabled: bool = False,
 ) -> SkillRegistry:
-    """Load user-defined, project, and enabled plugin skills."""
+    """Load bundled, user and project Skills without importing scripts."""
     registry = SkillRegistry()
     resolved_settings = settings or load_settings()
-    from researchx.plugins.loader import BUNDLED_PLUGINS_DIR, load_plugins, skill_enabled
+    enabled_skills = resolved_settings.enabled_skills
 
-    plugins = load_plugins(
-        resolved_settings, cwd or Path.cwd(), extra_roots=extra_plugin_roots, metadata_only=True
-    )
-    packaged_root = BUNDLED_PLUGINS_DIR.resolve()
-    for plugin in plugins:
-        if plugin.enabled and plugin.path.resolve().is_relative_to(packaged_root):
-            for skill in plugin.skills:
-                registry.register(skill)
+    def register(skill: SkillDefinition) -> None:
+        names = (skill.id, skill.metadata.skill_id, skill.command_name, skill.name)
+        enabled = next(
+            (enabled_skills[name] for name in names if name in enabled_skills), skill.enabled
+        )
+        registry.register(replace(skill, enabled=enabled))
+
+    from researchx.skills.migration import migrate_legacy_skill_directories
+
+    defaults = migrate_legacy_skill_directories(cwd or Path.cwd())
+    enabled_skills = {**defaults, **enabled_skills}
+    for skill in load_skills_from_dirs(
+        [BUNDLED_SKILLS_DIR], source="builtin", create_missing=False
+    ):
+        register(skill)
 
     for skill in load_user_skills():
-        registry.register(skill)
+        register(skill)
     for skill in load_skills_from_dirs(extra_skill_dirs, source="user"):
-        registry.register(skill)
+        register(skill)
 
     if cwd is not None and getattr(resolved_settings, "allow_project_skills", True):
         project_dirs = discover_project_skill_dirs(
@@ -91,23 +100,10 @@ def load_skill_registry(
             getattr(resolved_settings, "project_skill_dirs", list(_DEFAULT_PROJECT_SKILL_DIRS)),
         )
         for skill in load_skills_from_dirs(project_dirs, source="project", create_missing=False):
-            registry.register(skill)
+            register(skill)
 
-    # Installed contributions retain precedence over compatible standalone skills.
-    for plugin in plugins:
-        if plugin.enabled and not plugin.path.resolve().is_relative_to(packaged_root):
-            for skill in plugin.skills:
-                registry.register(skill)
-
-    enabled_skills = getattr(resolved_settings, "enabled_skills", {})
-    # Standalone user/project overrides retain precedence, while explicit switches
-    # and legacy business switches apply to the final selected definition too.
-    registry.retain(
-        lambda skill: (
-            skill.enabled
-            and skill_enabled(skill, resolved_settings.enabled_plugins, enabled_skills)
-        )
-    )
+    if not include_disabled:
+        registry.retain(lambda skill: skill.enabled)
     return registry
 
 

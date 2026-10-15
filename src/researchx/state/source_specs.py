@@ -12,4 +12,7 @@ class SourceSpec(RequiredSourceSpec, total=False):
     title: str
     locator: str
     published_at: str | None
+    event_at: str | None
     fragment: bool
+    original_locator: str
+    corrects_source_id: str

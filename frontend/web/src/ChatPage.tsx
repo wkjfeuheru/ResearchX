@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowUp, BookOpen, Building2, Check, ChevronDown, Copy, Download, Paperclip, Trash2, Layers, MessageSquare, Square } from 'lucide-react';
-import type { ModelProfile, Prompt, ResearchProgress, Session, SessionFile, Skill, Usage } from './api';
+import { api, type Delivery, type ModelProfile, type Prompt, type ResearchProgress, type Session, type SessionFile, type Skill, type Usage } from './api';
 import { Markdown, Modal } from './components';
 import ConversationTurn from './ConversationTurn';
 
@@ -35,7 +35,8 @@ function ResearchTasks({ progress, sessionId }: { progress: ResearchProgress; se
   const conflictLabels = { open: '发现冲突', investigating: '核查原文中', awaiting_review: '等待审查',
     resolved: '裁决完成', unresolved: '仍未决', interrupted: '核查已中断' };
   const hasPendingConflict = conflicts.some(conflict => conflict.core && conflict.status !== 'resolved');
-  const automaticOpen = progress.replan_required || progress.completed < progress.total || hasBlocked || hasPendingConflict
+  const pendingBranches = (progress.dispatches || []).some(batch => batch.branches.some(branch => !branch.reviewed));
+  const automaticOpen = pendingBranches || progress.replan_required || progress.completed < progress.total || hasBlocked || hasPendingConflict
     || !!(progress.project_status && progress.project_status !== 'completed');
   const [open, setOpen] = useState(automaticOpen);
   useEffect(() => {
@@ -65,6 +66,12 @@ function ResearchTasks({ progress, sessionId }: { progress: ResearchProgress; se
       <span className="task-status-symbol">{task.status === 'completed' ? <Check size={13} /> : '·'}</span>
       <span>{task.title}</span><small>{labels[task.status]}{task.status === 'blocked' && task.blocker ? ` · ${task.blocker}` : ''}</small>
     </li>)}</ol>}
+    {open && (progress.dispatches || []).map(batch => <ol key={batch.dispatch_id} aria-label="并行采集进度">
+      {batch.branches.map(branch => <li key={branch.task_id} className={branch.reviewed ? 'completed' : branch.status === 'running' ? 'in_progress' : branch.status === 'awaiting_review' ? 'validating' : branch.status}>
+        <span className="task-status-symbol">{branch.reviewed ? <Check size={13} /> : '·'}</span>
+        <span>{branch.title}</span><small>{branch.reviewed ? '主 Agent 已核对' : ({ queued: '排队中', running: '采集中', awaiting_review: '采集结束 · 待主代理核对', failed: '失败', cancelled: '已取消', interrupted: '已中断' } as Record<string, string>)[branch.status] || branch.status}</small>
+      </li>)}
+    </ol>)}
     {open && conflicts.length > 0 && <ol aria-label="争议处理进度">{conflicts.map(conflict =>
       <li key={conflict.id} className={conflict.status === 'resolved' ? 'completed' : 'blocked'}>
         <span className="task-status-symbol">{conflict.status === 'resolved' ? <Check size={13} /> : '·'}</span>
@@ -94,11 +101,12 @@ function Approval({ prompt, onRespond }: { prompt: Prompt; onRespond: (answer: s
 }
 
 export default function ChatPage({ session, models, skills, selectedProfile, onProfile, draft, setDraft,
-  busy, status, connected, hasSession, onSubmit, onCancel, onSteer, onSettings, onSkills, prompt, onRespond, attachments, artifacts, selectedFiles, uploading, onUpload, onRemoveFile, onSelectFile }: {
+  researchType, setResearchType, busy, status, connected, hasSession, onSubmit, onCancel, onSteer, onSettings, onSkills, prompt, onRespond, attachments, artifacts, selectedFiles, uploading, onUpload, onRemoveFile, onSelectFile }: {
   attachments: SessionFile[]; artifacts: SessionFile[]; selectedFiles: string[]; uploading: boolean;
   onUpload: (files: File[]) => void; onRemoveFile: (id: string) => void; onSelectFile: (id: string) => void;
   session: Session | null; models: ModelProfile[]; skills: Skill[];
   selectedProfile: string; onProfile: (id: string) => void; draft: string; setDraft: (value: string) => void;
+  researchType: string; setResearchType: (value: string) => void;
   busy: boolean; status: string; connected: boolean; hasSession: boolean; onSubmit: () => void;
   onCancel: () => void; onSettings: () => void; onSkills: () => void;
   onSteer: () => void;
@@ -107,9 +115,34 @@ export default function ChatPage({ session, models, skills, selectedProfile, onP
   const scroll = useRef<HTMLDivElement>(null);
   const previousScrollHeight = useRef(0);
   const [copied, setCopied] = useState('');
+  const [deliveries, setDeliveries] = useState<Delivery[]>([]);
   const model = models.find(m => m.id === selectedProfile);
   const enabled = skills.filter(s => s.enabled);
   const messages = session?.messages || [];
+  const finalAnswers = messages.filter(row => row.role === 'assistant' && !!row.answer_id).length;
+  useEffect(() => {
+    const sessionId = session?.session_id;
+    if (!sessionId || busy) { if (!sessionId) setDeliveries([]); return; }
+    const controller = new AbortController();
+    void api<{ items: Delivery[] }>(`/sessions/${sessionId}/deliveries`, { signal: controller.signal })
+      .then(result => { if (!controller.signal.aborted) setDeliveries(result.items); })
+      .catch(() => { if (!controller.signal.aborted) setDeliveries([]); });
+    return () => controller.abort();
+  }, [session?.session_id, busy, finalAnswers, artifacts.length]);
+  async function onReview(deliveryId: string, manifestHash: string, decision: 'approve' | 'changes_requested') {
+    const sessionId = session?.session_id;
+    if (!sessionId) return;
+    const note = decision === 'approve' ? '已核对事实、推断和预测依据' : '需要按意见修改后重新冻结';
+    try {
+      const updated = await api<Delivery>(`/sessions/${sessionId}/deliveries/${deliveryId}/review`, {
+        method: 'POST',
+        body: JSON.stringify({ decision, expected_manifest_hash: manifestHash, note, reviewed_claim_ids: [] }),
+      });
+      setDeliveries(current => current.map(item => item.delivery_id === deliveryId ? { ...item, ...updated } : item));
+    } catch {
+      return;
+    }
+  }
   useLayoutEffect(() => { previousScrollHeight.current = 0; }, [session?.session_id]);
   useLayoutEffect(() => {
     const element = scroll.current;
@@ -164,6 +197,12 @@ export default function ChatPage({ session, models, skills, selectedProfile, onP
     </div>
     <div className="composer-container">
       {session?.research_progress && <ResearchTasks progress={session.research_progress} sessionId={session.session_id} />}
+      {deliveries.length > 0 && <div className="session-artifacts" aria-label="研究交付版本">{deliveries.map(delivery => <div key={delivery.delivery_id} title={delivery.coverage.gaps.join('；')}>
+        {delivery.kind === 'answer' ? '点评草稿' : '报告草稿'} · {delivery.coverage.status === 'complete' ? '机器核验通过' : `资料${delivery.coverage.status === 'partial' ? '不完整' : '受阻'}`} · {({ awaiting_review: '待人工复核', blocked: '暂不可批准', approved: '人工审核通过', changes_requested: '需修改', invalidated: '批准已失效' } as Record<string, string>)[delivery.status]}
+        {delivery.coverage.gaps.length > 0 && <small>{delivery.coverage.gaps.join('；')}</small>}
+        {delivery.status === 'awaiting_review' && <button type="button" onClick={() => onReview(delivery.delivery_id, delivery.manifest_hash, 'approve')}>批准</button>}
+        {delivery.status === 'awaiting_review' && <button type="button" onClick={() => onReview(delivery.delivery_id, delivery.manifest_hash, 'changes_requested')}>要求修改</button>}
+      </div>)}</div>}
       {enabled.length > 0 && <div className="active-skills">{enabled.map(skill => <span key={skill.id}><Layers size={12} />{skill.label}</span>)}</div>}
       {artifacts.length > 0 && <div className="session-artifacts" aria-label="研究产物">{artifacts.map(file => <a key={file.id} href={`/api/sessions/${session?.session_id}/artifacts/${file.id}/download`} download>
         <Download size={14} />{file.name}<small>{file.status}{file.task_id ? ` · ${file.task_id}` : ''}</small></a>)}</div>}
@@ -171,6 +210,20 @@ export default function ChatPage({ session, models, skills, selectedProfile, onP
         <label><input type="checkbox" disabled={busy || uploading} checked={selectedFiles.includes(file.id)} onChange={() => onSelectFile(file.id)} />{file.name}<small>{file.status === 'ready' ? '可读取' : file.status === 'partial' ? '部分可读取' : file.status === 'failed' ? '解析失败' : '不支持'}{file.gaps?.length ? ` · ${file.gaps.join('；')}` : ''}</small></label>
         <button type="button" className="icon-button" aria-label={`删除附件 ${file.name}`} disabled={busy || uploading} onClick={() => onRemoveFile(file.id)}><Trash2 size={13} /></button></div>)}</div>}
       <form className="composer" onSubmit={e => { e.preventDefault(); if (busy) onSteer(); else onSubmit(); }}>
+        <label>研究类型 <select aria-label="研究类型" value={researchType} disabled={busy} onChange={e => setResearchType(e.target.value)}>
+          <option value="">自动识别</option>
+          <option value="generic-research">普通问答</option>
+          <option value="event_commentary">事件点评</option>
+          <option value="financial_commentary">财报点评</option>
+          <option value="financial-statement-analysis">财报解析</option>
+          <option value="earnings-forecast">盈利预测</option>
+          <option value="financial-commentary">业绩点评</option>
+          <option value="company-event-monitor">事件监测</option>
+          <option value="research-report-digest">研报精读</option>
+          <option value="industry-commentary">行业点评</option>
+          <option value="industry-deep-dive">行业深度</option>
+          <option value="deep-investment-report">公司深度</option>
+        </select></label>
         <textarea aria-label="对话输入" placeholder={busy ? '输入修改要求，可打断当前研究并重新规划…' : '输入研究问题，或粘贴需要分析的资料…'} rows={3} value={draft}
           onChange={e => setDraft(e.target.value)} onKeyDown={e => {
             if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); if (draft.trim() || selectedFiles.length) { if (busy) onSteer(); else onSubmit(); } }

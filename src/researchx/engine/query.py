@@ -8,9 +8,9 @@ import json
 import logging
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Literal, AsyncGenerator, AsyncIterator, Awaitable, Callable
+from typing import Any, Literal, AsyncGenerator, AsyncIterator, Awaitable, Callable
 from uuid import uuid4
 
 from researchx.engine.metadata import ExecutionMetadata
@@ -320,7 +320,20 @@ async def run_query(
         auto_compact_if_needed,
     )
 
+    from researchx.storage.turns import CheckpointError
+
     metadata = context.tool_metadata or {}
+    writer = metadata.get("checkpoint_writer")
+
+    async def checkpoint(
+        phase: str, history: list[ConversationMessage], *, projection: dict[str, Any] | None = None
+    ) -> None:
+        if writer is not None:
+            scope = str(context.cwd.resolve())
+            if metadata.get("subagent_child"):
+                scope += ":child:" + str(metadata.get("subagent_output_dir", ""))
+            await writer.save(phase=phase, messages=history, scope=scope, projection=projection)
+
     store = metadata.get("research_store")
     runtime = metadata.get("research_runtime")
     if (
@@ -482,6 +495,8 @@ async def run_query(
                         policy=context.context_components,
                         legacy_budget=metadata.get("research_injection_budget", 6000),
                         enabled=context.research_memory_enabled,
+                        auto_summary_max_tokens=metadata.get("auto_summary_max_tokens", 1500),
+                        auto_index_max_items=metadata.get("auto_index_max_items", 12),
                     )
             except (ResearchError, OSError, ContextBudgetError) as exc:
                 (await pause_project(str(exc)))
@@ -491,6 +506,42 @@ async def run_query(
                 request_messages, snapshot, strip_memory=not context.research_memory_enabled
             )
         # ---------------------------------------------------------------
+
+        if store is not None:
+            import base64
+            import binascii
+            import hashlib
+            from researchx.state.source_policy import (
+                history_use_gap,
+                image_use_allowed,
+                request_policy_view,
+            )
+
+            image_hashes: set[str] = set()
+            for message in request_messages:
+                for block in message.content:
+                    if isinstance(block, ImageBlock):
+                        try:
+                            image_hashes.add(
+                                hashlib.sha256(base64.b64decode(block.data, validate=True)).hexdigest()
+                            )
+                        except (ValueError, binascii.Error):
+                            yield ErrorEvent(message="图像数据编码无效。"), None
+                            return
+            policy_memory, approved_artifact_hashes = await request_policy_view(
+                store.workspace_id, store.session_id, list(request_messages), image_hashes
+            )
+            gap = history_use_gap(policy_memory, list(request_messages))
+            if gap:
+                yield ErrorEvent(message=gap), None
+                return
+            for digest in image_hashes:
+                if not image_use_allowed(policy_memory, digest, approved_artifact_hashes):
+                    yield (
+                        ErrorEvent(message="图像来源使用范围尚未确认，不能发送至外部模型。"),
+                        None,
+                    )
+                    return
 
         # --- image preprocessing: convert ImageBlocks to text for non-vision models ---
         async for event in _preprocess_images_in_messages(request_messages, context):
@@ -573,6 +624,7 @@ async def run_query(
         final_message: ConversationMessage | None = None
         usage = UsageSnapshot()
 
+        await checkpoint("before_model", messages)
         try:
             async for api_event in context.api_client.stream_message(request):
                 if isinstance(api_event, ApiTextDeltaEvent):
@@ -593,8 +645,36 @@ async def run_query(
                 if isinstance(api_event, ApiMessageCompleteEvent):
                     final_message = api_event.message
                     usage = api_event.usage
+                    await checkpoint(
+                        "model_response",
+                        [*messages, final_message],
+                        projection={
+                            "usage": usage.model_dump(mode="json"),
+                            "stop_reason": api_event.stop_reason,
+                        },
+                    )
+        except CheckpointError:
+            raise
         except Exception as exc:
             error_msg = str(exc)
+            if any(
+                tool.name.startswith("mcp__") for tool in context.tool_registry.list_tools()
+            ) and any(
+                marker in error_msg.lower()
+                for marker in (
+                    "invalid schema",
+                    "unsupported schema",
+                    "schema is not supported",
+                    "input_schema",
+                    "function.parameters",
+                )
+            ):
+                diagnostic = (
+                    "模型接口不支持当前工具参数 Schema；相关 MCP 工具不可用，请检查 Schema 兼容性。"
+                )
+                await pause_project(diagnostic)
+                yield ErrorEvent(message=diagnostic), None
+                return
             if _is_completion_token_limit_error(exc):
                 supported_limit = _extract_completion_token_limit(exc)
                 if supported_limit is not None and effective_max_tokens > supported_limit:
@@ -818,6 +898,7 @@ async def run_query(
                     )
 
         messages.append(final_message)
+        await checkpoint("before_tools" if final_message.tool_uses else "answer", messages)
         yield AssistantTurnComplete(message=final_message, usage=usage), usage
 
         if not final_message.tool_uses:
@@ -845,100 +926,23 @@ async def run_query(
                 None,
             )
 
-        if len(tool_calls) == 1:
-            # Single tool: sequential (stream events immediately)
-            tc = tool_calls[0]
-            yield (
-                ToolExecutionStarted(tool_name=tc.name, tool_input=tc.input, tool_use_id=tc.id),
-                None,
-            )
-            try:
-                result = await _execute_tool_call(context, tc.name, tc.id, tc.input)
-            except Exception as exc:
-                log.exception("tool execution raised: name=%s id=%s", tc.name, tc.id)
-                result = ToolResultBlock(
-                    tool_use_id=tc.id,
-                    content=f"Tool {tc.name} failed: {type(exc).__name__}: {exc}",
-                    is_error=True,
-                )
-            yield (
-                ToolExecutionCompleted(
-                    tool_name=tc.name,
-                    output=result.content,
-                    is_error=result.is_error,
-                    metadata=result.result_metadata,
-                    tool_use_id=result.tool_use_id,
-                ),
-                None,
-            )
-            if (context.tool_metadata or {}).get("research_store"):
-                progress = (result.result_metadata or {}).get("research_progress")
-                yield (
-                    ResearchProgressEvent(
-                        progress=progress
-                        or (await (context.tool_metadata or {})["research_store"].progress())
-                    ),
-                    None,
-                )
-            tool_results = [result]
-        else:
-            # Multiple tools: report each completion while slower siblings run.
-            for tc in tool_calls:
-                yield (
-                    ToolExecutionStarted(tool_name=tc.name, tool_input=tc.input, tool_use_id=tc.id),
-                    None,
-                )
-
-            async def _run(index: int, tc: ToolUseBlock) -> tuple[int, ToolResultBlock]:
-                try:
-                    result = await _execute_tool_call(context, tc.name, tc.id, tc.input)
-                except Exception as exc:
-                    log.exception("tool execution raised: name=%s id=%s", tc.name, tc.id)
-                    result = ToolResultBlock(
-                        tool_use_id=tc.id,
-                        content=f"Tool {tc.name} failed: {type(exc).__name__}: {exc}",
-                        is_error=True,
-                    )
-                return index, result
-
-            pending_tools = [
-                asyncio.create_task((_run(index, tc))) for index, tc in enumerate(tool_calls)
-            ]
-            ordered_results = {}
-            try:
-                for completed in asyncio.as_completed(pending_tools):
-                    index, result = await completed
-                    ordered_results[index] = result
-                    yield (
-                        ToolExecutionCompleted(
-                            tool_name=tool_calls[index].name,
-                            output=result.content,
-                            is_error=result.is_error,
-                            metadata=result.result_metadata,
-                            tool_use_id=result.tool_use_id,
-                        ),
-                        None,
-                    )
-                    if (context.tool_metadata or {}).get("research_store"):
-                        progress = (result.result_metadata or {}).get("research_progress")
-                        yield (
-                            ResearchProgressEvent(
-                                progress=progress
-                                or (
-                                    await (context.tool_metadata or {})["research_store"].progress()
-                                )
-                            ),
-                            None,
-                        )
-            finally:
-                # Cancellation must settle all tools before a steering run starts.
-                for task in pending_tools:
-                    if not task.done():
-                        task.cancel()
-                await asyncio.gather(*pending_tools, return_exceptions=True)
-            tool_results = [ordered_results[index] for index in range(len(tool_calls))]
+        tool_results_by_index: dict[int, ToolResultBlock] = {}
+        batch_stream = _execute_tool_batch(context, tool_calls)
+        try:
+            async for batch_event, index, result in batch_stream:
+                if batch_event is not None:
+                    yield batch_event, None
+                if result is not None:
+                    assert index is not None
+                    tool_results_by_index[index] = result
+        finally:
+            # async-for does not close its iterator when this outer generator is
+            # closed while yielding an event (SSE detach, steering, child submission).
+            await batch_stream.aclose()
+        tool_results = [tool_results_by_index[index] for index in range(len(tool_calls))]
 
         messages.append(ConversationMessage(role="user", content=[block for block in tool_results]))
+        await checkpoint("after_tools", messages)
         if metadata.get("subagent_child"):
             from researchx.state.errors import ResearchError
 
@@ -965,6 +969,93 @@ async def run_query(
     raise RuntimeError("Query loop exited without a max_turns limit or final response")
 
 
+async def _execute_tool_batch(
+    context: QueryContext, calls: list[ToolUseBlock]
+) -> AsyncGenerator[tuple[StreamEvent | None, int | None, ToolResultBlock | None], None]:
+    """Drain bounded progress while tools run; preserve model call/result ordering."""
+    queue: asyncio.Queue[tuple[StreamEvent | None, int | None, ToolResultBlock | None]] = (
+        asyncio.Queue(32)
+    )
+    shared = context.tool_metadata
+    if shared is None:
+        context.tool_metadata = shared = {}
+    shared.setdefault("http_semaphore", asyncio.Semaphore(4))
+    shared.setdefault("invoked_skills", [])
+    semaphore = asyncio.Semaphore(max(1, min(16, shared.get("tool_max_concurrency", 4))))
+
+    async def progress(value: dict[str, object]) -> None:
+        await queue.put((ResearchProgressEvent(progress=value), None, None))
+
+    batch_context = replace(context, tool_metadata={**shared, "tool_progress": progress})
+
+    async def worker(index: int, call: ToolUseBlock) -> None:
+        async with semaphore:
+            await queue.put((ToolExecutionStarted(call.name, call.input, call.id), None, None))
+            try:
+                result = await _execute_tool_call(batch_context, call.name, call.id, call.input)
+            except Exception as exc:
+                from researchx.storage.turns import CheckpointError
+
+                if isinstance(exc, CheckpointError):
+                    raise
+                from sqlalchemy.exc import SQLAlchemyError
+
+                if shared.get("checkpoint_writer") and isinstance(exc, (SQLAlchemyError, OSError)):
+                    raise CheckpointError("工具回执保存失败；已停止后续执行") from None
+                log.exception("tool execution raised: name=%s id=%s", call.name, call.id)
+                result = ToolResultBlock(
+                    tool_use_id=call.id,
+                    content=f"Tool {call.name} failed: {type(exc).__name__}: {exc}",
+                    is_error=True,
+                )
+            await queue.put(
+                (
+                    ToolExecutionCompleted(
+                        call.name, result.content, result.is_error, result.result_metadata, call.id
+                    ),
+                    index,
+                    result,
+                )
+            )
+            store = shared.get("research_store")
+            if store:
+                await progress(
+                    result.result_metadata.get("research_progress") or await store.progress()
+                )
+
+    pending = [asyncio.create_task(worker(i, call)) for i, call in enumerate(calls)]
+    received = 0
+    get: asyncio.Task[tuple[StreamEvent | None, int | None, ToolResultBlock | None]] | None = None
+    try:
+        while (
+            received < len(calls) or any(not task.done() for task in pending) or not queue.empty()
+        ):
+            get = asyncio.create_task(queue.get())
+            # Watch producers too: a persistence failure must not strand the consumer.
+            done, _ = await asyncio.wait(
+                [get, *(task for task in pending if not task.done())],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                if task.done():
+                    task.result()
+            if get in done:
+                item = get.result()
+                if item[2] is not None:
+                    received += 1
+                yield item
+            else:
+                get.cancel()
+                await asyncio.gather(get, return_exceptions=True)
+            get = None
+    finally:
+        if get is not None:
+            get.cancel()
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, *([get] if get else []), return_exceptions=True)
+
+
 async def _execute_tool_call(
     context: QueryContext,
     tool_name: str,
@@ -972,16 +1063,23 @@ async def _execute_tool_call(
     tool_input: dict[str, object],
 ) -> ToolResultBlock:
     from researchx.engine.observer import observer_for
+    from researchx.security.network_guard import network_request_limit
 
-    with observer_for(context.tool_metadata).span(
-        tool_name,
-        kind="tool",
-        input=tool_input,
-        metadata={
-            "tool_use_id": tool_use_id,
-            "investigation": bool((context.tool_metadata or {}).get("conflict_investigator")),
-        },
-    ) as span:
+    if context.tool_metadata is None:
+        context.tool_metadata = {}
+    limit = context.tool_metadata.setdefault("http_semaphore", asyncio.Semaphore(4))
+    with (
+        network_request_limit(limit),
+        observer_for(context.tool_metadata).span(
+            tool_name,
+            kind="tool",
+            input=tool_input,
+            metadata={
+                "tool_use_id": tool_use_id,
+                "investigation": bool((context.tool_metadata or {}).get("conflict_investigator")),
+            },
+        ) as span,
+    ):
         result = await _execute_tool_call_impl(context, tool_name, tool_use_id, tool_input)
         outcome = (result.result_metadata or {}).get("outcome")
         span.update(

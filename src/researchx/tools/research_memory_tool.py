@@ -7,7 +7,7 @@ import json
 
 from pydantic import Field, ValidationError, model_validator
 
-from researchx.state.models import Record, ResearchOperation
+from researchx.state.models import Record, ResearchOperation, SearchMemory
 from researchx.state.errors import ResearchError
 from researchx.tools.base import BaseTool, ToolExecutionContext, ToolResult
 
@@ -20,7 +20,7 @@ LEGACY_STATE_MIGRATION = {
 
 class ResearchMemoryInput(Record):
     operation: ResearchOperation = Field(
-        description="修改前先读取当前版本。使用唯一的 operation_id 和 expected_revision。所有 ID 必须属于当前会话。"
+        description="检索和读取使用当前研究作用域；写入前读取当前版本并使用唯一 operation_id 和 expected_revision。"
     )
 
     @model_validator(mode="wrap")
@@ -63,8 +63,8 @@ class ResearchMemoryTool(BaseTool[ResearchMemoryInput]):
         "parallelism": "resources",
     }
     description = (
-        "读取研究状态并维护当前会话的证据、来源链、结论、争议和可审计的 Reasoning Chain。"
-        "read 返回当前视图；read(ids, include_content) 获取归档记录和来源快照。"
+        "检索研究记录并维护证据、来源链、结论、争议和可审计的 Reasoning Chain。"
+        "search 按关键词、类型、任务和状态分页返回索引；read(ids, include_content) 获取记录和来源快照。"
         "报告目标、计划和任务由 ResearchAgentRuntime 负责；使用 research_project、planner/replanner 和 CompletionPolicy。"
         "set_context/create_plan/update_task 仅是旧会话兼容操作，在报告项目中会被拒绝。"
         "MEMORY.md 由主 Agent 的文件工具维护。add_evidence 必须使用程序发放的 source_id。"
@@ -74,7 +74,7 @@ class ResearchMemoryTool(BaseTool[ResearchMemoryInput]):
         "使用 supersedes 修订证据或结论。add_conflict 记录双方并标记核心结论待审查。"
         "主 Agent 检查原始来源、登记论证并提交 submit_conflict_report；可选的 dispatch_subagents 只返回候选结果。"
         "resolve_conflict 原子提交主 Agent 单独复核的裁决和后继结论；reopen_conflict 记录变化的证据或复核请求。"
-        "回答中使用 [E:ev_ID] 引用证据。写入属于会话内部记账。"
+        "回答中使用 [E:ev_ID] 引用证据。"
     )
     input_model = ResearchMemoryInput
 
@@ -112,22 +112,37 @@ class ResearchMemoryTool(BaseTool[ResearchMemoryInput]):
                 output="Research memory is not enabled for this session", is_error=True
             )
         try:
-            if (
+            operation = arguments.operation
+            if isinstance(operation, SearchMemory):
+                maximum = int(context.metadata.get("query_max_limit", 100))
+                default = int(context.metadata.get("query_default_limit", 20))
+                if not 1 <= default <= maximum <= 100:
+                    raise ResearchError("研究记录查询配置无效")
+                if "limit" not in operation.model_fields_set:
+                    operation = operation.model_copy(update={"limit": default})
+                if operation.limit > maximum:
+                    raise ResearchError(f"研究记录查询 limit 不得超过 {maximum}")
+            if arguments.operation.action in LEGACY_STATE_MIGRATION and (
                 await store.load()
-            ).project is not None and arguments.operation.action in LEGACY_STATE_MIGRATION:
+            ).project is not None:
                 return ToolResult(
                     output="Legacy plan/task writes cannot bypass Runtime. "
                     + LEGACY_STATE_MIGRATION[arguments.operation.action],
                     is_error=True,
                 )
             receipt = await store.apply(
-                arguments.operation.model_dump(mode="json"),
+                operation.model_dump(mode="json"),
                 budget=int(context.metadata.get("research_injection_budget", 6000)),
                 model=getattr(context.metadata.get("query_context"), "model", ""),
+                model_access=True,
             )
         except (ResearchError, ValueError) as exc:
             return ToolResult(output=str(exc), is_error=True)
-        progress = receipt["progress"] if "progress" in receipt else (await store.progress())
+        progress = (
+            receipt["progress"] if "progress" in receipt
+            else None if arguments.operation.action in {"search", "read"}
+            else await store.progress()
+        )
         detail = {
             "add_conflict": "已登记双方证据与争议",
             "submit_conflict_report": "核查报告已保存，等待主代理审查裁决",
@@ -143,9 +158,14 @@ class ResearchMemoryTool(BaseTool[ResearchMemoryInput]):
             output=json.dumps(receipt, ensure_ascii=False, sort_keys=True),
             metadata={
                 "context_component": "memory"
-                if arguments.operation.action == "read"
+                if arguments.operation.action in {"read", "search"}
                 else "dynamic_context",
-                "research_progress": progress,
+                **(
+                    {"research_sources": receipt["source_ids"]}
+                    if arguments.operation.action == "read" and "source_ids" in receipt
+                    else {}
+                ),
+                **({"research_progress": progress} if progress is not None else {}),
                 **({"detail": detail} if detail else {}),
             },
         )
@@ -155,7 +175,7 @@ class ResearchMemoryTool(BaseTool[ResearchMemoryInput]):
         return True
 
     def execution_contract(self, arguments: ResearchMemoryInput | None = None) -> object:
-        if arguments is not None and arguments.operation.action == "read":
+        if arguments is not None and arguments.operation.action in {"read", "search"}:
             return {
                 **self.contract,
                 "effect": "read_only",

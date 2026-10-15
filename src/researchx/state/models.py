@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from typing_extensions import TypedDict
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from researchx.contracts.models import FactBasis
 
 
 def now() -> str:
@@ -202,6 +203,15 @@ class CompletionResult(Record):
 SourceKind = Literal["web", "search", "file", "mcp", "user", "tool", "calculation"]
 
 
+class SourceUsage(Record):
+    category: Literal["unclassified", "public", "licensed", "internal"] = "unclassified"
+    provider: str = ""
+    licence_status: Literal["unknown", "pending", "confirmed", "restricted"] = "unknown"
+    model_use_allowed: bool = False
+    internal_export_allowed: bool = False
+    completeness: Literal["unknown", "full", "fragment", "summary"] = "unknown"
+
+
 class SourceRecord(Record):
     id: str
     plan_id: str | None = None
@@ -212,6 +222,7 @@ class SourceRecord(Record):
     origin_id: str
     collected_at: str
     published_at: str | None = None
+    event_at: str | None = None
     content_hash: str
     snapshot: str
     fragment: bool = False
@@ -219,6 +230,11 @@ class SourceRecord(Record):
     execution_id: str | None = None
     task_revision: int | None = None
     plan_revision: int | None = None
+    # Missing on legacy rows: never infer a licence from a URL or a successful fetch.
+    usage: SourceUsage = Field(default_factory=lambda: SourceUsage())
+    original_locator: str | None = None
+    corrects_source_id: str | None = None
+    request_profile: Literal["event_commentary", "financial_commentary"] | None = None
 
     @field_validator("collected_at")
     @classmethod
@@ -237,6 +253,7 @@ class Evidence(Record):
     source_id: str
     locator: str = ""
     period: str = ""
+    fact_basis: FactBasis | None = None
     collected_at: str
     published_at: str | None = None
     status: Literal["pending", "source_checked", "verified", "retracted"] = "pending"
@@ -443,6 +460,16 @@ class ReadMemory(Record):
     include_content: bool = False
 
 
+class SearchMemory(Record):
+    action: Literal["search"]
+    query: str = Field(default="", max_length=200)
+    record_types: list[Literal["source", "evidence", "reasoning", "conclusion", "conflict", "arbitration", "artifact"]] = Field(default_factory=list)
+    task_id: str | None = None
+    status: str | None = None
+    cursor: str | None = None
+    limit: int = Field(default=20, ge=1, le=100)
+
+
 class Mutation(Record):
     operation_id: str = Field(min_length=1, max_length=100)
     expected_revision: int = Field(ge=0)
@@ -484,6 +511,7 @@ class AddEvidence(Mutation):
     source_id: str
     locator: str = ""
     period: str = ""
+    fact_basis: FactBasis | None = None
     status: Literal["pending", "retracted"] = "pending"
     verification_step_id: str | None = None
     verification_note: str = ""
@@ -562,6 +590,7 @@ class ReopenConflict(Mutation):
 
 ResearchOperation = Annotated[
     ReadMemory
+    | SearchMemory
     | SetContext
     | CreatePlan
     | UpdateTask

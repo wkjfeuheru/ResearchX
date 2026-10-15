@@ -218,6 +218,31 @@ def test_probe_has_no_session_side_effects(workspace):
     assert client.get("/api/sessions").json()["items"] == []
 
 
+def test_delivery_listing_and_untrusted_review_are_fail_closed(workspace):
+    client, _, _, _, _ = workspace
+    profile = add_model(client)
+    session = add_session(client, profile)
+    response = client.get(f"/api/sessions/{session}/deliveries")
+    assert response.status_code == 200
+    assert response.json() == {"items": []}
+    response = client.post(
+        f"/api/sessions/{session}/deliveries/fake/review",
+        json={"actor_id": "analyst", "decision": "approve"},
+        headers={"X-Reviewer": "analyst"},
+    )
+    assert response.status_code == 422
+    response = client.post(
+        f"/api/sessions/{session}/deliveries/fake/review",
+        json={
+            "decision": "approve",
+            "expected_manifest_hash": "a" * 64,
+            "note": "已核对",
+            "reviewed_claim_ids": [],
+        },
+    )
+    assert response.status_code == 404
+
+
 def test_deepseek_profile_without_explicit_window_can_probe_and_chat(workspace):
     client, _, requests, _, _ = workspace
     response = client.post(
@@ -281,29 +306,39 @@ def test_streaming_resume_model_switch_and_secret_redaction(workspace):
     assert client.delete(f"/api/models/{profile}").status_code == 200
 
 
-def test_cancel_disconnect_and_global_busy(workspace):
-    client, app, _, _, _ = workspace
+def test_parallel_runs_queue_and_disconnect_keeps_the_run(workspace):
+    client, app, requests, _, _ = workspace
     profile = add_model(client)
-    first, second = add_session(client, profile), add_session(client, profile)
+    first, second, third = [add_session(client, profile) for _ in range(3)]
     with sse_connect(client, first, headers=ORIGIN) as one:
         one.receive_json()
         submit(one, "slow")
         collect(one, "delta")
         with sse_connect(client, second, headers=ORIGIN) as two:
             two.receive_json()
-            rejected = two.command({"type": "submit", "request_id": "r1", "text": "another"})
-            assert rejected.status_code == 409
-            assert "另一个会话" in rejected.json()["detail"]
+            accepted = two.command({"type": "submit", "request_id": "r1", "text": "slow"})
+            assert accepted.status_code == 202
+            queued = client.post(
+                f"/api/sessions/{third}/commands",
+                json={"type": "submit", "request_id": "r3", "text": "hello"},
+            )
+            assert queued.status_code == 202 and queued.json()["status"] == "queued"
+            assert len(requests) == 2
+        live = app.state.workspace.active_runs.get(second)
+        assert live is not None and live.busy
+        assert client.post(
+            f"/api/sessions/{second}/commands",
+            json={"type": "cancel", "request_id": "r1"},
+        ).status_code == 202
         one.send_json({"type": "cancel", "request_id": "r1"})
         assert collect(one)[-1]["cancelled"]
         assert not app.state.workspace.lock.locked()
-        submit(one, "slow", request_id="r2")
-        collect(one, "delta")
-    # SSE teardown waits for cancellation and persistence.
+    for _ in range(100):
+        if len(requests) >= 3:
+            break
+        client.get(f"/api/sessions/{third}")
+    assert len(requests) == 3
     assert not app.state.workspace.lock.locked()
-    record = client.get(f"/api/sessions/{first}").json()
-    assert record["messages"][-1]["text"] == "部分回复"
-    assert len(record["messages"]) == 4
 
 
 @pytest.mark.parametrize("allow", [True, False])
@@ -378,10 +413,10 @@ def test_edit_approval_reject_does_not_write(workspace):
 def test_research_skill_enable_invoke_and_disable_next_turn(workspace):
     client, _, requests, _, _ = workspace
     cards = client.get("/api/skills").json()["items"]
-    research = [item for item in cards if item["category"] != "技能管理"]
-    assert len(research) == 2 and all(s["enabled"] for s in research)
+    research = [item for item in cards if item["source"] == "builtin"]
+    assert len(research) == 8 and all(s["enabled"] for s in research)
     assert all("sample" not in card for card in cards)
-    sample = "financial-statement-analysis"
+    sample = next(s["id"] for s in client.get("/api/skills").json()["items"] if s["name"] == "financial-statement-analysis")
     assert client.patch(f"/api/skills/{sample}", json={"enabled": True}).status_code == 200
     sid = add_session(client, add_model(client))
     with sse_connect(client, sid, headers=ORIGIN) as socket:
@@ -400,10 +435,9 @@ def test_research_skill_enable_invoke_and_disable_next_turn(workspace):
     card = next(
         item
         for item in client.get("/api/skills").json()["items"]
-        if item["id"] == "analysis-modeling"
+        if item["name"] == "financial-statement-analysis"
     )
-    assert card["enabled"]
-    assert not next(s for s in card["skills"] if s["name"] == sample)["enabled"]
+    assert not card["enabled"]
 
 
 def test_packaged_skill_plugin_disable_and_enable_next_turn(workspace):
@@ -411,11 +445,10 @@ def test_packaged_skill_plugin_disable_and_enable_next_turn(workspace):
     card = next(
         item
         for item in client.get("/api/skills").json()["items"]
-        if item["id"] == "analysis-modeling"
+        if item["name"] == "financial-statement-analysis"
     )
     assert card["enabled"] and "sample" not in card
-    assert len(card["skills"]) == 4
-    assert all("content" not in skill for skill in card["skills"])
+    assert "content" not in card
     sid = add_session(client, add_model(client))
     with sse_connect(client, sid, headers=ORIGIN) as socket:
         socket.receive_json()
@@ -423,14 +456,14 @@ def test_packaged_skill_plugin_disable_and_enable_next_turn(workspace):
         collect(socket)
         assert "**financial-statement-analysis**" in requests[-1].system_prompt
         assert (
-            client.patch("/api/skills/analysis-modeling", json={"enabled": False}).status_code
+            client.patch(f"/api/skills/{card['id']}", json={"enabled": False}).status_code
             == 200
         )
         submit(socket, "下一轮", request_id="r2")
         collect(socket)
         assert "**financial-statement-analysis**" not in requests[-1].system_prompt
         assert (
-            client.patch("/api/skills/analysis-modeling", json={"enabled": True}).status_code == 200
+            client.patch(f"/api/skills/{card['id']}", json={"enabled": True}).status_code == 200
         )
         submit(socket, "再下一轮", request_id="r3")
         collect(socket)
@@ -560,8 +593,13 @@ def test_cli_auth_exit_does_not_terminate_web_server(workspace, monkeypatch):
 
 
 async def test_skill_switch_does_not_change_an_in_flight_turn(workspace):
+    from researchx.config.settings import load_settings
+
+    settings = load_settings()
+    settings.research_memory.enabled = False
+    save_settings(settings)
     client, _, requests, _, _ = workspace
-    sample = "financial-statement-analysis"
+    sample = next(s["id"] for s in client.get("/api/skills").json()["items"] if s["name"] == "financial-statement-analysis")
     client.patch(f"/api/skills/{sample}", json={"enabled": True})
     sid = add_session(client, add_model(client))
     with sse_connect(client, sid, headers=ORIGIN) as socket:
@@ -588,7 +626,10 @@ async def test_skill_switch_does_not_change_an_in_flight_turn(workspace):
         ]
         assert operations and all("tool_input" not in row and not row["text"] for row in operations)
         submit(socket, "下一轮", request_id="r2")
-        collect(socket)
+        next_events = collect(socket)
+        assert not next_events[-1]["failed"], next(
+            event.get("message") for event in next_events if event["type"] == "error"
+        )
         assert "**financial-statement-analysis**" not in requests[-1].system_prompt
 
 
@@ -685,6 +726,9 @@ async def test_attachment_upload_submit_isolation_restart_and_cleanup(workspace)
         output, task_id="task1", status="partial", kind="financial"
     ))
     endpoint = f"/api/sessions/{sid}/artifacts/{artifact['id']}/download"
+    assert client.get(endpoint).status_code == 403  # Unversioned reports cannot be exported.
+    from researchx.state.deliveries import DeliveryService
+    await DeliveryService(directory).freeze_file(artifact["id"], b"Report", evidence_ids=[], source_ids=[])
     assert client.get(endpoint).content == b"Report"
     assert (
         client.get(f"/api/sessions/{second}/artifacts/{artifact['id']}/download").status_code == 404
@@ -696,6 +740,37 @@ async def test_attachment_upload_submit_isolation_restart_and_cleanup(workspace)
     assert client.delete(f"/api/sessions/{sid}").status_code == 200
     assert await app.state.workspace.store.records.load(sid) is None
     assert client.get(endpoint).status_code == 404
+
+
+def test_delete_rejects_run_without_event_connection(workspace):
+    from researchx.web.runtime import SessionController
+    from researchx.web.models import CommandRequest
+
+    client, app, _, _, _ = workspace
+    sid = add_session(client, add_model(client))
+    coordinator = app.state.workspace
+    controller = SessionController(sid, coordinator)
+    coordinator.active_runs[sid] = controller
+    controller.accepting = True
+    assert client.delete(f"/api/sessions/{sid}").status_code == 409
+    controller.accepting = False
+    controller.queued_request = CommandRequest(type="submit", request_id="queued", text="run")
+    assert client.delete(f"/api/sessions/{sid}").status_code == 409
+    assert client.get(f"/api/sessions/{sid}").status_code == 200
+    controller.queued_request = None
+    coordinator.active_runs.pop(sid)
+    assert client.delete(f"/api/sessions/{sid}").status_code == 200
+
+
+def test_resume_command_does_not_claim_a_run_without_scheduling_it(workspace):
+    client, app, _, _, _ = workspace
+    sid = add_session(client, add_model(client))
+    response = client.post(
+        f"/api/sessions/{sid}/commands",
+        json={"type": "resume", "request_id": "old-run", "run_id": "old-run"},
+    )
+    assert response.status_code == 409
+    assert sid not in app.state.workspace.active_runs
 
 
 def test_attachment_failures_limits_and_server_id_validation(workspace, monkeypatch):
@@ -753,54 +828,36 @@ def test_model_rejects_nonpositive_budget_fields(workspace, field):
 
 def test_skill_catalog_is_metadata_only_and_details_are_selected(workspace, monkeypatch):
     from pathlib import Path
-    from researchx.plugins.loader import BUNDLED_PLUGINS_DIR
+    from researchx.skills.loader import BUNDLED_SKILLS_DIR
 
     client, _, _, _, _ = workspace
     original = Path.read_text
     reads = []
 
     def read(path, *args, **kwargs):
-        if path.name == "SKILL.md" and path.is_relative_to(BUNDLED_PLUGINS_DIR):
+        if path.name == "SKILL.md" and path.is_relative_to(BUNDLED_SKILLS_DIR):
             reads.append(path)
         return original(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "read_text", read)
     cards = client.get("/api/skills").json()["items"]
-    assert len(cards) == 2 and not reads
-    assert all("content" not in skill for card in cards for skill in card["skills"])
-    selected = client.get("/api/skills/report-generation/industry-commentary")
+    assert len(cards) == 8 and not reads
+    assert all("content" not in skill for skill in cards)
+    selected_id = next(s["id"] for s in cards if s["name"] == "industry-commentary")
+    selected = client.get(f"/api/skills/{selected_id}")
     assert selected.status_code == 200 and "行业点评" in selected.json()["content"]
     assert len(reads) == 1 and reads[0].parent.name == "industry-commentary"
-    assert (
-        client.patch("/api/skills/industry-commentary", json={"enabled": False}).status_code == 200
-    )
-    assert client.get("/api/skills/report-generation/industry-commentary").status_code == 409
-    assert len(reads) == 1
-    assert (
-        client.patch("/api/skills/industry-commentary", json={"enabled": True}).status_code == 200
-    )
-    assert client.patch("/api/skills/report-generation", json={"enabled": False}).status_code == 200
-    assert client.get("/api/skills/report-generation/industry-commentary").status_code == 409
+    assert client.patch(f"/api/skills/{selected_id}", json={"enabled": False}).status_code == 200
+    # A disabled Skill remains inspectable so it can be enabled again.
+    assert client.get(f"/api/skills/{selected_id}").status_code == 200
+    assert client.patch("/api/skills/report-generation", json={"enabled": False}).status_code == 404
 
 
-def test_legacy_skill_configuration_and_explicit_switches(workspace):
+def test_explicit_skill_switches(workspace):
     client, _, _, _, _ = workspace
-    from researchx.config.settings import load_settings
-
-    settings = load_settings().model_copy(
-        update={"enabled_plugins": {"financial-statement-analysis": False}}
-    )
-    save_settings(settings)
     cards = client.get("/api/skills").json()["items"]
-    package = next(card for card in cards if card["id"] == "analysis-modeling")
-    assert package["enabled"]
-    assert not next(
-        skill for skill in package["skills"] if skill["name"] == "financial-statement-analysis"
-    )["enabled"]
-    assert (
-        client.patch("/api/skills/financial-statement-analysis", json={"enabled": True}).status_code
-        == 200
-    )
-    assert (
-        client.get("/api/skills/analysis-modeling/financial-statement-analysis").status_code == 200
-    )
+    skill = next(card for card in cards if card["name"] == "financial-statement-analysis")
+    assert client.patch(f"/api/skills/{skill['id']}", json={"enabled": False}).status_code == 200
+    assert not next(s for s in client.get("/api/skills").json()["items"] if s["id"] == skill["id"])["enabled"]
+    assert client.patch(f"/api/skills/{skill['id']}", json={"enabled": True}).status_code == 200
+    assert client.get(f"/api/skills/{skill['id']}").status_code == 200

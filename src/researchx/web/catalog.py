@@ -1,8 +1,7 @@
-"""Profiles, credentials and plugin cards shared with the CLI."""
+"""Profiles, credentials and Skills shared with the CLI."""
 
 from __future__ import annotations
 
-from typing import cast
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -10,7 +9,6 @@ from fastapi import HTTPException
 from researchx.auth.manager import AuthManager
 from researchx.config import Settings, load_settings, save_settings
 from researchx.config.settings import ProviderProfile, builtin_provider_profile_names
-from researchx.plugins import load_plugins
 from researchx.web.models import ModelInput
 
 
@@ -135,73 +133,56 @@ def save_model(data: ModelInput, profile_id: str | None = None) -> str:
 
 
 def skills_list(cwd: str) -> list[dict[str, object]]:
-    plugins = load_plugins(load_settings(), cwd, metadata_only=True)
-    cards = []
-    for plugin in plugins:
-        cards.append(
-            {
-                "id": plugin.name,
-                "label": plugin.manifest.display_name or plugin.name,
-                "description": plugin.description,
-                "version": plugin.manifest.version,
-                "enabled": plugin.enabled,
-                "diagnostics": plugin.diagnostics,
-                "category": plugin.manifest.category,
-                "example": plugin.manifest.example,
-                "skills": [
-                    {
-                        "name": s.command_name or s.name,
-                        "description": s.description,
-                        "enabled": s.enabled,
-                        "metadata": s.metadata.model_dump(),
-                        "entrypoint": str(s.path),
-                        "base_dir": str(s.base_dir),
-                    }
-                    for s in plugin.skills
-                ],
-            }
-        )
-    return cards
+    from researchx.skills.loader import load_skill_registry
+
+    return [
+        {
+            "id": skill.id,
+            "name": skill.command_name or skill.name,
+            "label": skill.display_name or skill.command_name or skill.name,
+            "source": skill.source,
+            "description": skill.description,
+            "enabled": skill.enabled,
+            "metadata": skill.metadata.model_dump(),
+            "version": skill.metadata.version,
+        }
+        for skill in load_skill_registry(
+            cwd, settings=load_settings(), include_disabled=True
+        ).list_skills()
+    ]
 
 
-def toggle_skill(cwd: str, plugin_id: str, enabled: bool) -> None:
+def toggle_skill(cwd: str, skill_id: str, enabled: bool) -> None:
+    if not any(skill["id"] == skill_id for skill in skills_list(cwd)):
+        raise HTTPException(404, "技能不存在")
     settings = load_settings()
-    cards = skills_list(cwd)
-    if any(p["id"] == plugin_id for p in cards):
-        updated = {**settings.enabled_plugins, plugin_id: enabled}
-        save_settings(settings.model_copy(update={"enabled_plugins": updated}))
-    elif any(
-        s["name"] == plugin_id for p in cards for s in cast(list[dict[str, object]], p["skills"])
-    ):
-        # Retain PATCH /skills/<old-business-plugin-id> for old clients/configs.
-        selected = next(
+    save_settings(
+        settings.model_copy(
+            update={"enabled_skills": {**settings.enabled_skills, skill_id: enabled}}
+        )
+    )
+
+
+def skill_detail(cwd: str, skill_id: str) -> dict[str, object]:
+    from researchx.skills.loader import load_skill_registry
+
+    skill = next(
+        (
             s
-            for p in cards
-            for s in cast(list[dict[str, object]], p["skills"])
-            if s["name"] == plugin_id
-        )
-        metadata = selected["metadata"]
-        key = (
-            str(metadata.get("skill_id") or plugin_id) if isinstance(metadata, dict) else plugin_id
-        )
-        updated = {**settings.enabled_skills, key: enabled}
-        save_settings(settings.model_copy(update={"enabled_skills": updated}))
-    else:
-        raise HTTPException(404, "技能插件不存在")
-
-
-def skill_detail(cwd: str, plugin_id: str, name: str) -> dict[str, object]:
-    """Only a specifically requested entrypoint is read; resources remain unloaded."""
-    for plugin in load_plugins(load_settings(), cwd, metadata_only=True):
-        if plugin.name != plugin_id:
-            continue
-        for skill in plugin.skills:
-            if name not in {skill.name, skill.command_name}:
-                continue
-            if not skill.enabled or skill.metadata.status in {"draft", "retired"}:
-                raise HTTPException(409, "技能已禁用或未发布")
-            try:
-                return {"name": name, "content": skill.load_content()}
-            except (ValueError, OSError) as exc:
-                raise HTTPException(400, str(exc)) from exc
-    raise HTTPException(404, "技能不存在")
+            for s in load_skill_registry(
+                cwd, settings=load_settings(), include_disabled=True
+            ).list_skills()
+            if s.id == skill_id
+        ),
+        None,
+    )
+    if skill is None:
+        raise HTTPException(404, "技能不存在")
+    try:
+        return {
+            "id": skill.id,
+            "name": skill.command_name or skill.name,
+            "content": skill.load_content(),
+        }
+    except (ValueError, OSError) as exc:
+        raise HTTPException(400, str(exc)) from exc

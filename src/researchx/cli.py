@@ -5,8 +5,8 @@ from researchx.config.settings import ProviderProfile
 from researchx.auth.manager import AuthManager
 
 import json
+import os
 import sys
-from pathlib import Path
 from typing import Optional
 
 import typer
@@ -37,13 +37,11 @@ app = typer.Typer(
 # ---------------------------------------------------------------------------
 
 mcp_app = typer.Typer(name="mcp", help="Manage MCP servers")
-plugin_app = typer.Typer(name="plugin", help="Manage plugins")
 auth_app = typer.Typer(name="auth", help="Manage authentication")
 provider_app = typer.Typer(name="provider", help="Manage provider profiles")
 config_app = typer.Typer(name="config", help="Show or update settings")
 
 app.add_typer(mcp_app)
-app.add_typer(plugin_app)
 app.add_typer(auth_app)
 app.add_typer(provider_app)
 app.add_typer(config_app)
@@ -51,9 +49,28 @@ app.add_typer(eval_app)
 app.add_typer(operations_app)
 
 
+def _default_web_port() -> int:
+    """Resolve the default Web port, overridable via RESEARCHX_WEB_PORT.
+
+    Allows moving the workspace off a busy port without passing --port each time.
+    Invalid or out-of-range values fall back to the built-in default.
+    """
+    raw = os.environ.get("RESEARCHX_WEB_PORT", "").strip()
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if 1 <= value <= 65535:
+            return value
+    return 8000
+
+
 @app.command("web")
 def web_cmd(
-    port: int = typer.Option(8000, "--port", min=1, max=65535, help="Local HTTP port"),
+    port: int = typer.Option(
+        _default_web_port(), "--port", min=1, max=65535, help="Local HTTP port"
+    ),
     cwd: Optional[str] = typer.Option(None, "--cwd", help="Agent working directory"),
 ) -> None:
     """Start the local financial research web workspace."""
@@ -75,11 +92,9 @@ def mcp_list() -> None:
     """List configured MCP servers."""
     from researchx.config import load_settings
     from researchx.mcp.config import load_mcp_server_configs
-    from researchx.plugins import load_plugins
 
     settings = load_settings()
-    plugins = load_plugins(settings, str(Path.cwd()))
-    configs = load_mcp_server_configs(settings, plugins)
+    configs = load_mcp_server_configs(settings)
     if not configs:
         print("No MCP servers configured.")
         return
@@ -123,52 +138,6 @@ def mcp_remove(
     del settings.mcp_servers[name]
     save_settings(settings)
     print(f"Removed MCP server: {name}")
-
-
-# ---- plugin subcommands ----
-
-
-@plugin_app.command("list")
-def plugin_list() -> None:
-    """List installed plugins."""
-    from researchx.config import load_settings
-    from researchx.plugins import load_plugins
-
-    settings = load_settings()
-    plugins = load_plugins(settings, str(Path.cwd()))
-    if not plugins:
-        print("No plugins installed.")
-        return
-    for plugin in plugins:
-        status = "enabled" if plugin.enabled else "disabled"
-        print(f"  {plugin.name} [{status}] - {plugin.description or ''}")
-        for diagnostic in plugin.diagnostics:
-            print(f"    {diagnostic}")
-
-
-@plugin_app.command("install")
-def plugin_install(
-    source: str = typer.Argument(..., help="Plugin source (path or URL)"),
-) -> None:
-    """Install a plugin from a source path."""
-    from researchx.plugins.installer import install_plugin_from_path
-
-    result = install_plugin_from_path(source)
-    print(f"Installed plugin: {result}")
-
-
-@plugin_app.command("uninstall")
-def plugin_uninstall(
-    name: str = typer.Argument(..., help="Plugin name to uninstall"),
-) -> None:
-    """Uninstall a plugin."""
-    from researchx.plugins.installer import uninstall_plugin
-
-    try:
-        uninstall_plugin(name)
-    except ValueError as exc:
-        raise typer.BadParameter("invalid plugin name") from exc
-    print(f"Uninstalled plugin: {name}")
 
 
 # ---- auth subcommands ----

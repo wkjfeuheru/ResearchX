@@ -6,7 +6,7 @@ import builtins
 import pytest
 
 from researchx.config.settings import Settings
-from researchx.plugins.loader import BUNDLED_PLUGINS_DIR, load_plugins
+from researchx.skills.loader import BUNDLED_SKILLS_DIR
 from researchx.prompts.context import _build_skills_section
 from researchx.skills.loader import load_skill_registry, load_skills_from_dirs
 from researchx.skills.metadata import cached_content_hash, content_hash
@@ -194,24 +194,13 @@ def test_hash_cache_write_failure_and_read_only_skill_root(isolated, monkeypatch
     assert load_skills_from_dirs([base])[0].metadata.content_hash == first
 
 
-@pytest.mark.parametrize("package", ["analysis-modeling", "report-generation"])
-def test_package_switch_overrides_individual_and_legacy_settings(isolated, package):
-    plugin = next(p for p in load_plugins(Settings(), isolated) if p.name == package)
-    names = {s.name for s in plugin.skills}
-    settings = Settings(
-        enabled_plugins={package: False}, enabled_skills={name: True for name in names}
-    )
-    registry = load_skill_registry(isolated, settings=settings)
-    assert all(registry.get(name) is None for name in names)
+def test_each_skill_can_be_disabled_without_hiding_other_skills(isolated):
+    names = {s.name for s in load_skill_registry(isolated, settings=Settings()).list_skills() if s.source == "builtin"}
+    assert len(names) == 8
     for name in names:
         registry = load_skill_registry(isolated, settings=Settings(enabled_skills={name: False}))
         assert registry.get(name) is None
         assert all(registry.get(other) for other in names - {name})
-    legacy = Settings(
-        enabled_plugins={"deep-investment-report": False},
-        enabled_skills={"deep-investment-report": True},
-    )
-    assert load_skill_registry(isolated, settings=legacy).get("deep-investment-report")
 
 
 @pytest.mark.asyncio
@@ -256,7 +245,7 @@ def test_all_bundled_metadata_and_relative_resource_links(isolated):
         "deprecation",
         "content_hash",
     }
-    entries = list(BUNDLED_PLUGINS_DIR.glob("*/skills/*/SKILL.md"))
+    entries = list(BUNDLED_SKILLS_DIR.glob("*/SKILL.md"))
     assert len(entries) == 8
     for entry in entries:
         text = entry.read_text()
@@ -267,25 +256,17 @@ def test_all_bundled_metadata_and_relative_resource_links(isolated):
             assert resolve_resource(entry.parent, link).is_file()
         for section in ("输入要求", "主流程", "完成标准", "失败处理"):
             assert section in text
-    assert not (BUNDLED_PLUGINS_DIR / "skill-authoring").exists()
+    assert not (BUNDLED_SKILLS_DIR / "skill-authoring").exists()
 
 
-def test_metadata_discovery_does_not_import_unrelated_plugin_tools(isolated):
-    root = isolated / "plugins/fixture"
-    (root / "tools").mkdir(parents=True)
-    base = make_skill(root / "skills")
-    (root / "plugin.json").write_text('{"name":"fixture"}')
+def test_metadata_discovery_does_not_execute_scripts(isolated):
+    root = isolated / "skills"
+    base = make_skill(root)
     marker = isolated / "tool-imported"
-    (root / "tools/fixture.py").write_text(
-        f"from pathlib import Path\nPath({str(marker)!r}).touch()\n"
-    )
-    registry = load_skill_registry(isolated, settings=Settings(), extra_plugin_roots=[root.parent])
-    assert registry.get("example").path == str(base / "SKILL.md") and not marker.exists()
-    assert any(
-        plugin.name == "fixture"
-        for plugin in load_plugins(Settings(), isolated, extra_roots=[root.parent])
-    )
-    assert marker.exists()
+    (base / "scripts/fixture.py").write_text(f"from pathlib import Path\nPath({str(marker)!r}).touch()\n")
+    registry = load_skill_registry(isolated, settings=Settings(), extra_skill_dirs=[root])
+    assert registry.get("example").path == str(base / "SKILL.md")
+    assert not marker.exists()
 
 
 @pytest.mark.asyncio
@@ -348,9 +329,12 @@ def test_bundled_shared_report_code_participates_in_hash_invalidation(isolated, 
     import researchx.skills.metadata as metadata
 
     app = isolated / "researchx"
-    bundled = app / "plugins/bundled"
-    base = make_skill(bundled / "report-generation/skills", "industry-commentary")
-    helper = bundled / "report-generation/reporting.py"
+    bundled = app / "skills/bundled"
+    base = make_skill(bundled, "industry-commentary")
+    helper = app / "skills/_shared/reporting.py"
+    helper.parent.mkdir()
+    (helper.parent / "__init__.py").write_text("")
+    (app / "skills/runtime_support.py").write_text("support_version = 1\n")
     helper.write_text("report_validation_version = 1\n")
     monkeypatch.setattr(metadata, "__file__", str(app / "skills/metadata.py"))
     first = content_hash(base / "SKILL.md")

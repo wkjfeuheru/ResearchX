@@ -70,7 +70,8 @@ class WebSearchTool(BaseTool[WebSearchToolInput]):
         "source": "builtin",
         "effect": "read_only",
         "required_capabilities": ("network.http",),
-        "resources_read": ("*",),
+        "resources_read": ("network.http",),
+        "parallelism": "resources",
     }
     description = (
         "搜索投研来源，优先使用官方政策、统计和披露，其次是行业专业来源，最后是财经媒体。"

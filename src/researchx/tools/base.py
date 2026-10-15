@@ -97,7 +97,9 @@ class ToolExecutionContext:
         return (path if path.is_absolute() else self.cwd / path).resolve()
 
     async def validate_search_pattern(self, pattern: str) -> None:
-        if (await self.workspace_runtime()) and ".." in Path(pattern).parts:
+        if (
+            (await self.workspace_runtime()) or self.metadata.get("subagent_output_dir")
+        ) and ".." in Path(pattern).parts:
             from researchx.state.errors import ResearchError
 
             raise ResearchError("Workspace search path traversal is forbidden")
@@ -133,6 +135,14 @@ class ToolExecutionContext:
         runtime = await self.workspace_runtime()
         if self.metadata.get("subagent_output_dir"):
             candidate = await self.resolve_path(candidate, write=write)
+            scope = self.metadata.get("subagent_scope")
+            dispatch_runtime = self.metadata.get("research_workspace_runtime")
+            if scope and dispatch_runtime:
+                async with dispatch_runtime.dispatch_file_lock(
+                    scope, Path(candidate), write=write
+                ) as path:
+                    yield path
+                return
         if runtime:
             project_id = runtime.repository._project((await runtime.store.load())).id
             async with runtime.workspace_file_lock(project_id, candidate) as path:
@@ -198,6 +208,12 @@ class BaseTool(ABC, Generic[InputT]):
     description: str
     input_model: type[InputT]
 
+    def input_schema(self) -> dict[str, Any]:
+        return self.input_model.model_json_schema()
+
+    def parse_input(self, payload: dict[str, Any]) -> InputT:
+        return self.input_model.model_validate(payload)
+
     def execution_contract(self, arguments: InputT | None = None) -> Any:
         """Explicit invocation metadata; defaults to the tool's static declaration."""
         return getattr(self, "contract", None)
@@ -230,7 +246,7 @@ class BaseTool(ABC, Generic[InputT]):
         return {
             "name": self.name,
             "description": self.description,
-            "input_schema": self.input_model.model_json_schema(),
+            "input_schema": self.input_schema(),
         }
 
 

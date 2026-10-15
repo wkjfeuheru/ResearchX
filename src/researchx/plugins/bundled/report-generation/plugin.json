@@ -1,9 +1,0 @@
-{
-  "name": "report-generation",
-  "version": "1.0.0",
-  "display_name": "报告生成 Skill 包",
-  "description": "公司与行业报告模板、章节组织、引用核验和交付质量检查",
-  "category": "报告生成",
-  "enabled_by_default": true,
-  "example": "/deep-investment-report 生成公司深度报告"
-}

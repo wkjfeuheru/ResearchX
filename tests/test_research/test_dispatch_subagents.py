@@ -613,6 +613,11 @@ async def test_child_search_filters_sibling_and_symlink_content(project, tmp_pat
     workspace = (await project.resolve_workspace("P"))
     visible = workspace / "artifacts/shared.md"
     visible.write_text("SEARCH_VISIBLE", encoding="utf-8")
+    from researchx.state.models import SourceUsage
+    await project.store.capture(origin_id="public-shared-fixture", kind="file",
+        locator=str(visible), content=visible.read_text(),
+        usage=SourceUsage(category="public", licence_status="pending",
+            model_use_allowed=True, internal_export_allowed=True, completeness="full"))
     sibling = workspace / "subagents/old-dispatch/sibling/private.md"
     sibling.parent.mkdir(parents=True)
     sibling.write_text("SEARCH_SIBLING_PRIVATE", encoding="utf-8")

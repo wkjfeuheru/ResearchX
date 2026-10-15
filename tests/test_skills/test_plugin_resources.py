@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from researchx.config.settings import Settings
-from researchx.plugins.loader import BUNDLED_PLUGINS_DIR, load_plugins
+from researchx.skills.loader import BUNDLED_SKILLS_DIR
 from researchx.skills import load_skill_registry
 from researchx.tools.base import ToolExecutionContext
 from researchx.tools.file_read_tool import FileReadTool, FileReadToolInput
@@ -21,24 +21,15 @@ def isolated_home(tmp_path, monkeypatch):
     return tmp_path
 
 
-def test_packaged_skill_is_only_an_enabled_plugin_contribution(isolated_home):
+def test_packaged_skills_are_individually_discovered(isolated_home):
     registry = load_skill_registry(isolated_home, settings=Settings())
-    creator = registry.get("financial-statement-analysis")
-    assert creator is not None and creator.source == "plugin"
-    assert Path(creator.path).is_relative_to(BUNDLED_PLUGINS_DIR)
+    skill = registry.get("financial-statement-analysis")
+    assert skill is not None and skill.source == "builtin"
+    assert Path(skill.path).is_relative_to(BUNDLED_SKILLS_DIR)
     assert registry.get("replace-with-skill-name") is None
-    assert not any(skill.source == "bundled" for skill in registry.list_skills())
-    disabled = Settings(enabled_plugins={"analysis-modeling": False})
-    assert (
-        load_skill_registry(isolated_home, settings=disabled).get("financial-statement-analysis")
-        is None
-    )
-    card = next(
-        plugin
-        for plugin in load_plugins(disabled, isolated_home)
-        if plugin.name == "analysis-modeling"
-    )
-    assert not card.enabled and len(card.skills) == 4
+    disabled = Settings(enabled_skills={"financial-statement-analysis": False})
+    assert load_skill_registry(isolated_home, settings=disabled).get("financial-statement-analysis") is None
+    assert load_skill_registry(isolated_home, settings=disabled, include_disabled=True).get("financial-statement-analysis")
 
 
 @pytest.mark.asyncio
@@ -65,7 +56,7 @@ async def test_disabled_packaged_plugin_cannot_be_loaded_by_tool(isolated_home):
         ToolExecutionContext(
             cwd=isolated_home,
             metadata={
-                "skill_settings": Settings(enabled_plugins={"analysis-modeling": False}),
+                "skill_settings": Settings(enabled_skills={"financial-statement-analysis": False}),
             },
         ),
     )
@@ -86,27 +77,20 @@ def test_directory_skill_wins_over_legacy_and_nested_templates_are_not_discovere
     (skill_root / "report" / "templates" / "nested" / "SKILL.md").write_text(
         "---\nname: not-a-skill\ndescription: Template\n---\n",
     )
-    registry = load_skill_registry(isolated_home, settings=Settings(), extra_plugin_roots=[root])
+    registry = load_skill_registry(isolated_home, settings=Settings(), extra_skill_dirs=[skill_root])
     assert registry.get("report").path == str(entrypoint)
     assert registry.get("report").description == "Folded plugin description."
     assert registry.get("legacy") is not None
     assert registry.get("not-a-skill") is None
 
 
-def test_user_plugin_can_replace_packaged_plugin_without_duplicate_cards(isolated_home):
-    root = isolated_home / "config" / "plugins" / "custom-authoring"
-    (root / "skills" / "custom").mkdir(parents=True)
-    (root / "plugin.json").write_text(json.dumps({"name": "analysis-modeling"}))
-    (root / "skills" / "custom" / "SKILL.md").write_text(
-        "---\nname: custom\ndescription: Custom\n---\n"
-    )
-    plugins = load_plugins(Settings(), isolated_home)
-    matches = [plugin for plugin in plugins if plugin.name == "analysis-modeling"]
-    assert len(matches) == 1 and matches[0].path == root
+def test_user_skill_can_override_a_builtin_skill(isolated_home):
+    root = isolated_home / "config/skills/financial-statement-analysis"
+    root.mkdir(parents=True)
+    (root / "SKILL.md").write_text("---\nname: financial-statement-analysis\ndescription: Custom\n---\n")
     registry = load_skill_registry(isolated_home, settings=Settings())
-    assert (
-        registry.get("custom") is not None and registry.get("financial-statement-analysis") is None
-    )
+    assert registry.get("financial-statement-analysis").source == "user"
+    assert registry.get("earnings-forecast").source == "builtin"
 
 
 def test_compatible_user_skill_can_override_packaged_default(isolated_home):
@@ -140,7 +124,7 @@ async def test_listing_resources_neither_executes_scripts_nor_reads_outside_syml
         SkillToolInput(name="fixture"),
         ToolExecutionContext(
             cwd=isolated_home,
-            metadata={"extra_plugin_roots": [root], "skill_settings": Settings()},
+            metadata={"extra_skill_dirs": [base.parent], "skill_settings": Settings()},
         ),
     )
     assert not result.is_error and "scripts/" in result.output
@@ -164,12 +148,12 @@ def test_full_research_plugins_have_metadata_and_independent_switches(isolated_h
         assert skill.content is None
         assert {"bash", "read_file", "write_file"} <= set(skill.metadata.required_tools)
         registry = load_skill_registry(
-            isolated_home, settings=Settings(enabled_plugins={name: False})
+            isolated_home, settings=Settings(enabled_skills={name: False})
         )
         assert registry.get(name) is None
         assert all(registry.get(other) is not None for other in names - {name})
     disabled = load_skill_registry(
-        isolated_home, settings=Settings(enabled_plugins={"financial-statement-analysis": False})
+        isolated_home, settings=Settings(enabled_skills={"financial-statement-analysis": False})
     )
     assert disabled.get("deep-investment-report") and not disabled.get(
         "financial-statement-analysis"
@@ -200,7 +184,7 @@ def test_metadata_hash_stable_resources_change_and_hash_field_excluded(isolated_
 def test_skill_hash_covers_its_relocated_business_implementation(isolated_home):
     from researchx.skills.metadata import content_hash
 
-    source = BUNDLED_PLUGINS_DIR / "analysis-modeling" / "skills" / "financial-statement-analysis"
+    source = BUNDLED_SKILLS_DIR / "financial-statement-analysis"
     base = isolated_home / "financial-skill-copy"
     shutil.copytree(source, base, ignore=shutil.ignore_patterns("__pycache__"))
     entry = base / "SKILL.md"

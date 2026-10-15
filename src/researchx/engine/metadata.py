@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, TypedDict, Callable, Awaitable
 import asyncio
+from collections.abc import Mapping
 from pathlib import Path
 
 if TYPE_CHECKING:
@@ -15,6 +16,8 @@ if TYPE_CHECKING:
     from researchx.state.runtime import ResearchAgentRuntime
     from researchx.mcp.client import McpClientManager
     from researchx.tools.base import ToolRegistry
+    from researchx.state.business_coverage import Profile
+    from researchx.storage.turns import TurnJournal
 
 
 class ExecutionLease(TypedDict):
@@ -28,12 +31,20 @@ class ExecutionLease(TypedDict):
 
 
 class ExecutionMetadata(TypedDict, total=False):
+    checkpoint_writer: TurnJournal
+    current_user_message_id: str
+    operation_mappings: dict[str, dict[str, object]]
     research_store: ResearchStore
     research_runtime: ResearchAgentRuntime
     research_workspace_runtime: ResearchAgentRuntime
     research_workspace_root: str | Path | None
     research_injection_budget: int
+    research_auto_inject: bool
     memory_auto_inject_max_chars: int
+    auto_summary_max_tokens: int
+    auto_index_max_items: int
+    query_default_limit: int
+    query_max_limit: int
     conflict_max_turns: int
     conflict_timeout_seconds: float
     conflict_investigator: bool
@@ -52,6 +63,12 @@ class ExecutionMetadata(TypedDict, total=False):
     subagent_max_concurrency: int
     subagent_timeout_seconds: float
     subagent_semaphore: asyncio.Semaphore
+    http_semaphore: asyncio.Semaphore
+    tool_max_concurrency: int
+    tool_progress: Callable[[dict[str, object]], Awaitable[None]]
+    subagent_scope: Mapping[str, object]
+    parent_operation_id: str
+    record_candidate_sources: Callable[[list[dict[str, object]]], Awaitable[None]]
     query_context: QueryContext
     tool_registry: ToolRegistry
     trusted_settings: Settings
@@ -64,7 +81,6 @@ class ExecutionMetadata(TypedDict, total=False):
     vision_model_config: dict[str, str]
     image_generation_config: dict[str, str]
     extra_skill_dirs: tuple[str, ...]
-    extra_plugin_roots: tuple[str, ...]
     observer: Observer | None
     permission_mode: str
     session_approvals: dict[str, list[str]]
@@ -73,5 +89,8 @@ class ExecutionMetadata(TypedDict, total=False):
     selected_skill_roots: dict[str, str]
     context_budget: dict[str, object]
     latest_user_source_id: str
+    business_profile: Profile
+    current_business_profile: Profile
+    business_window: dict[str, str]
     compact_last: dict[str, object]
     compact_checkpoints: list[dict[str, object]]

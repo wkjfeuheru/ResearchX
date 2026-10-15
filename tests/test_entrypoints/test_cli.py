@@ -5,6 +5,7 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 import researchx.cli as cli
@@ -12,6 +13,12 @@ from researchx.config import load_settings
 
 
 app = cli.app
+
+
+@pytest.fixture(autouse=True)
+def isolated_keyring(monkeypatch):
+    """Setup must not block on the developer keyring or its D-Bus prompt."""
+    monkeypatch.setattr("researchx.auth.storage._keyring_available", lambda: False)
 
 
 def test_cli_help():
@@ -33,6 +40,7 @@ def test_cli_help():
 def test_setup_flow_selects_profile_and_model(tmp_path: Path, monkeypatch):
     runner = CliRunner()
     monkeypatch.setenv("RESEARCHX_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr("researchx.auth.storage._keyring_available", lambda: False)
 
     selected = []
 
@@ -126,6 +134,9 @@ def test_setup_flow_creates_kimi_profile_with_profile_scoped_key(tmp_path: Path,
     # Prevent env var leakage from overriding the configured api_key
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)
+    monkeypatch.delenv("RESEARCHX_MOONSHOT_API_KEY", raising=False)
+    monkeypatch.setattr("researchx.auth.storage._keyring_available", lambda: False)
 
     selections = iter(["claude-api", "kimi-anthropic"])
     prompts = iter(

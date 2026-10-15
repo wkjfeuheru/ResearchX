@@ -47,7 +47,8 @@ class WebFetchTool(BaseTool[WebFetchToolInput]):
         "source": "builtin",
         "effect": "read_only",
         "required_capabilities": ("network.http",),
-        "resources_read": ("*",),
+        "resources_read": ("network.http",),
+        "parallelism": "resources",
     }
     description = "读取研究网页并标记最终来源。进入来源目录不代表事实已核验；目录外链接仍可读取。"
     input_model = WebFetchToolInput

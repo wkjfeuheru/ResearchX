@@ -3,7 +3,6 @@
 from __future__ import annotations
 from researchx.config import Settings
 from researchx.engine.metadata import ExecutionMetadata
-from researchx.plugins.types import LoadedPlugin
 from researchx.config.settings import ResolvedAuth
 from researchx.state.store import ResearchStore
 from researchx.evaluation.observer import RecordingObserver
@@ -11,6 +10,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable
 import sys
+import asyncio
+from contextlib import AsyncExitStack
+from researchx.services.execution.async_timeout import timeout as async_timeout
 from uuid import uuid4
 from researchx.api.client import AnthropicApiClient, SupportsStreamingMessages
 from researchx.api.codex_client import CodexApiClient
@@ -24,10 +26,9 @@ from researchx.hooks import HookEvent, HookExecutionContext, HookExecutor, load_
 from researchx.mcp.client import McpClientManager
 from researchx.mcp.config import load_mcp_server_configs
 from researchx.permissions import PermissionChecker
-from researchx.plugins import load_plugins
 from researchx.prompts import build_runtime_prompt
 from researchx.services.sessions.storage import _persistable_tool_metadata
-from researchx.tools import RESEARCH_EXCLUDED_TOOLS, ToolRegistry, create_research_tool_registry
+from researchx.tools import ToolRegistry, create_research_tool_registry
 
 PermissionPrompt = Callable[[str, str], Awaitable[bool]]
 AskUserPrompt = Callable[[str], Awaitable[str]]
@@ -74,13 +75,14 @@ class RuntimeBundle:
     runtime_id: str = ""
     settings_overrides: dict[str, Any] = field(default_factory=dict)
     extra_skill_dirs: tuple[str, ...] = ()
-    extra_plugin_roots: tuple[str, ...] = ()
+    resources: AsyncExitStack | None = field(default=None, repr=False)
+    owns_api_client: bool = True
+    session_started: bool = False
+    close_task: asyncio.Task[None] | None = field(default=None, repr=False)
+    cleanup_errors: list[BaseException] = field(default_factory=list, repr=False)
 
     def current_settings(self) -> Settings:
         return load_settings().merge_cli_overrides(**self.settings_overrides)
-
-    def current_plugins(self) -> list[LoadedPlugin]:
-        return load_plugins(self.current_settings(), self.cwd, extra_roots=self.extra_plugin_roots)
 
 
 def _resolve_api_client_from_settings(settings: Settings) -> SupportsStreamingMessages:
@@ -178,6 +180,7 @@ async def build_runtime(
     api_format: str | None = None,
     active_profile: str | None = None,
     api_client: SupportsStreamingMessages | None = None,
+    owns_api_client: bool = True,
     permission_prompt: PermissionPrompt | None = None,
     ask_user_prompt: AskUserPrompt | None = None,
     edit_approval_prompt: EditApprovalPrompt | None = None,
@@ -187,7 +190,6 @@ async def build_runtime(
     enforce_max_turns: bool = True,
     permission_mode: str | None = None,
     extra_skill_dirs: Iterable[str | Path] | None = None,
-    extra_plugin_roots: Iterable[str | Path] | None = None,
     session_id: str | None = None,
     observer: RecordingObserver | None = None,
     settings_override: Settings | None = None,
@@ -196,92 +198,78 @@ async def build_runtime(
     context_window_tokens: int | None = None,
 ) -> RuntimeBundle:
     """Build the shared runtime for an ResearchX session."""
-    settings_overrides: dict[str, Any] = {
-        "model": model,
-        "max_turns": max_turns,
-        "effort": effort,
-        "base_url": base_url,
-        "system_prompt": system_prompt,
-        "api_key": api_key,
-        "api_format": api_format,
-        "active_profile": active_profile,
-        "permission_mode": permission_mode,
-        "context_window_tokens": context_window_tokens,
-    }
-    settings = (settings_override or load_settings()).merge_cli_overrides(**settings_overrides)
-    cwd = str(Path(cwd).expanduser().resolve()) if cwd else str(Path.cwd())
-    normalized_skill_dirs = tuple(
-        str(Path(path).expanduser().resolve()) for path in (extra_skill_dirs or ())
-    )
-    normalized_plugin_roots = tuple(
-        str(Path(path).expanduser().resolve()) for path in (extra_plugin_roots or ())
-    )
-    plugins = load_plugins(settings, cwd, extra_roots=normalized_plugin_roots)
-    if api_client:
-        resolved_api_client = api_client
-    else:
-        resolved_api_client = _resolve_api_client_from_settings(settings)
-    if observer is not None:
-        from researchx.evaluation.observer import ObservedClient
-
-        resolved_api_client = ObservedClient(resolved_api_client, observer)
-    mcp_manager = McpClientManager(load_mcp_server_configs(settings, plugins))
-    if connect_mcp:
-        try:
-            await mcp_manager.connect_all()
-        except BaseException:
-            await mcp_manager.close()
-            close = getattr(resolved_api_client, "close", None)
-            if close:
-                await close()
-            raise
+    pending = AsyncExitStack()
+    cleanup_errors: list[BaseException] = []
     try:
+        if api_client is not None and owns_api_client:
+            close = getattr(api_client, "close", None)
+            if close is not None:
+                pending.push_async_callback(_close_resource, "api_client", close, cleanup_errors)
+        settings_overrides: dict[str, Any] = {
+            "model": model,
+            "max_turns": max_turns,
+            "effort": effort,
+            "base_url": base_url,
+            "system_prompt": system_prompt,
+            "api_key": api_key,
+            "api_format": api_format,
+            "active_profile": active_profile,
+            "permission_mode": permission_mode,
+            "context_window_tokens": context_window_tokens,
+        }
+        settings = (settings_override or load_settings()).merge_cli_overrides(**settings_overrides)
+        cwd = str(Path(cwd).expanduser().resolve()) if cwd else str(Path.cwd())
+        normalized_skill_dirs = tuple(
+            str(Path(path).expanduser().resolve()) for path in (extra_skill_dirs or ())
+        )
+        resolved_api_client = (
+            api_client if api_client is not None else _resolve_api_client_from_settings(settings)
+        )
+        client_is_owned = api_client is None or owns_api_client
+        if api_client is None:
+            close = getattr(resolved_api_client, "close", None)
+            if close is not None:
+                pending.push_async_callback(_close_resource, "api_client", close, cleanup_errors)
+        if observer is not None:
+            from researchx.evaluation.observer import ObservedClient
+
+            resolved_api_client = ObservedClient(resolved_api_client, observer)
+        mcp_manager = McpClientManager(load_mcp_server_configs(settings))
+        pending.push_async_callback(_close_resource, "mcp", mcp_manager.close, cleanup_errors)
+        if connect_mcp:
+            await mcp_manager.connect_all()
         tool_registry = create_research_tool_registry(mcp_manager)
-        # Register plugin-provided tools
-        for plugin in plugins:
-            if plugin.enabled and plugin.tools:
-                for tool in plugin.tools:
-                    if tool.name not in RESEARCH_EXCLUDED_TOOLS:
-                        tool_registry.register(tool)
-        # Plugins cannot reintroduce removed names to the research product surface.
-        for name in RESEARCH_EXCLUDED_TOOLS:
-            tool_registry.unregister(name)
-    except BaseException:
-        await mcp_manager.close()
-        close = getattr(resolved_api_client, "close", None)
-        if close:
-            await close()
-        raise
-    hook_executor = HookExecutor(
-        load_hook_registry(settings, plugins),
-        HookExecutionContext(
-            cwd=Path(cwd).resolve(),
-            settings=settings,
-            api_client=resolved_api_client,
-            default_model=settings.model,
-            context_window_tokens=settings.context_window_tokens,
-        ),
-    )
-    engine_max_turns = settings.max_turns if (enforce_max_turns or max_turns is not None) else None
-    system_prompt_text = build_runtime_prompt(
-        settings,
-        cwd=cwd,
-        latest_user_prompt=prompt,
-        extra_skill_dirs=normalized_skill_dirs,
-        extra_plugin_roots=normalized_plugin_roots,
-    )
-    if not session_id:
-        raise ValueError("Research runtime requires the existing Web session ID")
-    restored_metadata = _persistable_tool_metadata(restore_tool_metadata)
-    if observer is not None:
-        restored_metadata["observer"] = observer
-    restored_metadata["permission_mode"] = settings.permission.mode.value
-    if settings.research_memory.enabled:
+        hook_executor = HookExecutor(
+            load_hook_registry(settings),
+            HookExecutionContext(
+                cwd=Path(cwd).resolve(),
+                settings=settings,
+                api_client=resolved_api_client,
+                default_model=settings.model,
+                context_window_tokens=settings.context_window_tokens,
+            ),
+        )
+        engine_max_turns = (
+            settings.max_turns if (enforce_max_turns or max_turns is not None) else None
+        )
+        system_prompt_text = build_runtime_prompt(
+            settings,
+            cwd=cwd,
+            latest_user_prompt=prompt,
+            extra_skill_dirs=normalized_skill_dirs,
+        )
+        if not session_id:
+            raise ValueError("Research runtime requires the existing Web session ID")
+        restored_metadata = _persistable_tool_metadata(restore_tool_metadata)
+        if observer is not None:
+            restored_metadata["observer"] = observer
+        restored_metadata["permission_mode"] = settings.permission.mode.value
         from researchx.state.store import ResearchStore
 
         store = research_store_override or ResearchStore(cwd, session_id)
         (await store.load())  # Corruption must be reported, never silently reset.
         restored_metadata["research_store"] = store
+        restored_metadata["research_auto_inject"] = settings.research.context.auto_inject
         restored_metadata["research_injection_budget"] = (
             settings.research_memory.injection_budget_tokens
         )
@@ -293,6 +281,12 @@ async def build_runtime(
         restored_metadata["memory_auto_inject_max_chars"] = (
             settings.research_memory.memory_auto_inject_max_chars
         )
+        restored_metadata["auto_summary_max_tokens"] = (
+            settings.research_memory.auto_summary_max_tokens
+        )
+        restored_metadata["auto_index_max_items"] = settings.research_memory.auto_index_max_items
+        restored_metadata["query_default_limit"] = settings.research_memory.query_default_limit
+        restored_metadata["query_max_limit"] = settings.research_memory.query_max_limit
         restored_metadata["subagent_max_concurrency"] = (
             settings.research_memory.subagent_max_concurrency
         )
@@ -300,80 +294,93 @@ async def build_runtime(
         restored_metadata["subagent_timeout_seconds"] = (
             settings.research_memory.subagent_timeout_seconds
         )
-    else:
-        tool_registry.unregister("research_memory")
-        for name in ("planner", "replanner", "research_project", "dispatch_subagents"):
-            tool_registry.unregister(name)
 
-    runtime_id = uuid4().hex
-    engine = QueryEngine(
-        api_client=resolved_api_client,
-        tool_registry=tool_registry,
-        permission_checker=PermissionChecker(settings.permission),
-        cwd=cwd,
-        model=settings.model,
-        system_prompt=system_prompt_text,
-        max_tokens=settings.max_tokens,
-        context_window_tokens=settings.context_window_tokens,
-        auto_compact_threshold_tokens=settings.auto_compact_threshold_tokens,
-        max_turns=engine_max_turns,
-        permission_prompt=permission_prompt,
-        ask_user_prompt=ask_user_prompt,
-        hook_executor=hook_executor,
-        settings=settings,
-        tool_metadata={
-            "trusted_settings": settings.model_copy(deep=True),
-            "runtime_id": runtime_id,
-            "mcp_manager": mcp_manager,
-            "extra_skill_dirs": normalized_skill_dirs,
-            "extra_plugin_roots": normalized_plugin_roots,
-            "session_id": session_id,
-            "edit_approval_prompt": edit_approval_prompt,
-            "vision_model_config": _resolve_vision_config(settings),
-            **restored_metadata,
-        },
-    )
-    hook_executor._context.account_usage = engine.tool_metadata.get("account_subagent_usage")
-    engine.restore_usage(restore_usage)
-    # Restore messages from a saved session if provided
-    if restore_messages:
-        (
-            await engine.load_messages(
-                [ConversationMessage.model_validate(m) for m in restore_messages]
-            )
+        runtime_id = uuid4().hex
+        from researchx.sandbox.session import stop_runtime_sandboxes
+
+        pending.push_async_callback(
+            _close_resource, "sandbox", lambda: stop_runtime_sandboxes(runtime_id), cleanup_errors
         )
-        (await engine.load_messages(sanitize_conversation_messages(engine.messages)))
+        engine = QueryEngine(
+            api_client=resolved_api_client,
+            tool_registry=tool_registry,
+            permission_checker=PermissionChecker(settings.permission),
+            cwd=cwd,
+            model=settings.model,
+            system_prompt=system_prompt_text,
+            max_tokens=settings.max_tokens,
+            context_window_tokens=settings.context_window_tokens,
+            auto_compact_threshold_tokens=settings.auto_compact_threshold_tokens,
+            max_turns=engine_max_turns,
+            permission_prompt=permission_prompt,
+            ask_user_prompt=ask_user_prompt,
+            hook_executor=hook_executor,
+            settings=settings,
+            tool_metadata={
+                "trusted_settings": settings.model_copy(deep=True),
+                "runtime_id": runtime_id,
+                "mcp_manager": mcp_manager,
+                "extra_skill_dirs": normalized_skill_dirs,
+                "session_id": session_id,
+                "edit_approval_prompt": edit_approval_prompt,
+                "vision_model_config": _resolve_vision_config(settings),
+                **restored_metadata,
+            },
+        )
+        hook_executor._context.account_usage = engine.tool_metadata.get("account_subagent_usage")
+        engine.restore_usage(restore_usage)
+        # Restore messages from a saved session if provided
+        if restore_messages:
+            (
+                await engine.load_messages(
+                    [ConversationMessage.model_validate(m) for m in restore_messages]
+                )
+            )
+            (await engine.load_messages(sanitize_conversation_messages(engine.messages)))
 
-    # Start Docker sandbox if configured
-    sandbox_store = engine.tool_metadata.get("research_store")
-    if (
-        settings.sandbox.enabled
-        and settings.sandbox.backend == "docker"
-        and (sandbox_store is None or (await sandbox_store.load()).project is None)
-    ):
-        from researchx.sandbox.session import start_docker_sandbox
+        # Start Docker sandbox if configured
+        sandbox_store = engine.tool_metadata.get("research_store")
+        if (
+            settings.sandbox.enabled
+            and settings.sandbox.backend == "docker"
+            and (sandbox_store is None or (await sandbox_store.load()).project is None)
+        ):
+            from researchx.sandbox.session import start_docker_sandbox
 
-        await start_docker_sandbox(settings, runtime_id, Path(cwd))
+            await start_docker_sandbox(settings, runtime_id, Path(cwd))
 
-    return RuntimeBundle(
-        api_client=resolved_api_client,
-        cwd=cwd,
-        mcp_manager=mcp_manager,
-        tool_registry=tool_registry,
-        hook_executor=hook_executor,
-        engine=engine,
-        session_id=session_id,
-        runtime_id=runtime_id,
-        settings_overrides=settings_overrides,
-        extra_skill_dirs=normalized_skill_dirs,
-        extra_plugin_roots=normalized_plugin_roots,
-    )
+        bundle = RuntimeBundle(
+            api_client=resolved_api_client,
+            cwd=cwd,
+            mcp_manager=mcp_manager,
+            tool_registry=tool_registry,
+            hook_executor=hook_executor,
+            engine=engine,
+            session_id=session_id,
+            runtime_id=runtime_id,
+            settings_overrides=settings_overrides,
+            extra_skill_dirs=normalized_skill_dirs,
+            owns_api_client=client_is_owned,
+            cleanup_errors=cleanup_errors,
+        )
+        bundle.resources = pending.pop_all()
+        return bundle
+    except BaseException as exc:
+        cleanup = asyncio.create_task(pending.aclose())
+        try:
+            await _await_cleanup(cleanup)
+        except asyncio.CancelledError as cleanup_cancel:
+            cleanup_errors.append(cleanup_cancel)
+        if cleanup_errors:
+            setattr(exc, "cleanup_errors", cleanup_errors)
+        raise
 
 
 async def start_runtime(bundle: RuntimeBundle) -> None:
     """Run session start hooks."""
     from researchx.api.retry import bind_api_audit
 
+    bundle.session_started = True
     with bind_api_audit(bundle.cwd, bundle.session_id):
         await bundle.hook_executor.execute(
             HookEvent.SESSION_START,
@@ -381,32 +388,73 @@ async def start_runtime(bundle: RuntimeBundle) -> None:
         )
 
 
-async def close_runtime(bundle: RuntimeBundle) -> None:
-    """Close runtime-owned resources, keeping final hook attempts in this session."""
-    from researchx.api.retry import bind_api_audit
+class RuntimeCleanupError(RuntimeError):
+    def __init__(self, errors: list[BaseException]) -> None:
+        self.errors = errors
+        super().__init__(
+            "Runtime cleanup failed: "
+            + ", ".join(
+                f"{getattr(error, 'resource', 'resource')}: {type(error).__name__}"
+                for error in errors
+            )
+        )
 
-    with bind_api_audit(bundle.cwd, bundle.session_id):
-        await _close_runtime(bundle)
+
+async def _close_resource(
+    name: str, close: Callable[[], Awaitable[Any]], errors: list[BaseException]
+) -> None:
+    try:
+        async with async_timeout(15):
+            await close()
+    except BaseException as exc:
+        setattr(exc, "resource", name)
+        errors.append(exc)
+
+
+async def _await_cleanup(task: asyncio.Task[None]) -> None:
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    task.result()
+    if cancelled:
+        raise asyncio.CancelledError
+
+
+async def close_runtime(bundle: RuntimeBundle) -> None:
+    if bundle.close_task is None:
+        bundle.close_task = asyncio.create_task(_close_runtime(bundle))
+    await _await_cleanup(bundle.close_task)
+    if bundle.cleanup_errors:
+        raise RuntimeCleanupError(bundle.cleanup_errors)
 
 
 async def _close_runtime(bundle: RuntimeBundle) -> None:
+    from researchx.api.retry import bind_api_audit
     from researchx.sandbox.session import stop_runtime_sandboxes
 
-    try:
-        await stop_runtime_sandboxes(bundle.runtime_id)
-    finally:
-        try:
-            await bundle.mcp_manager.close()
-        finally:
-            try:
-                await bundle.hook_executor.execute(
+    with bind_api_audit(bundle.cwd, bundle.session_id):
+        if bundle.session_started:
+            await _close_resource(
+                "session_end",
+                lambda: bundle.hook_executor.execute(
                     HookEvent.SESSION_END,
                     {"cwd": bundle.cwd, "event": HookEvent.SESSION_END.value},
-                )
-            finally:
-                close_api_client = getattr(bundle.api_client, "close", None)
-                if close_api_client is not None:
-                    await close_api_client()
+                ),
+                bundle.cleanup_errors,
+            )
+        if bundle.resources is not None:
+            await bundle.resources.aclose()
+        else:
+            await _close_resource(
+                "sandbox", lambda: stop_runtime_sandboxes(bundle.runtime_id), bundle.cleanup_errors
+            )
+            await _close_resource("mcp", bundle.mcp_manager.close, bundle.cleanup_errors)
+            close = getattr(bundle.api_client, "close", None)
+            if bundle.owns_api_client and close is not None:
+                await _close_resource("api_client", close, bundle.cleanup_errors)
 
 
 async def handle_line(

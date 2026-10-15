@@ -23,7 +23,7 @@ class HashRecord(TypedDict):
     hash: str
 
 
-_CACHE_VERSION = 1
+_CACHE_VERSION = 2
 _MEMORY_CACHE: dict[str, HashRecord] = {}
 
 
@@ -34,32 +34,34 @@ def hash_resources(entrypoint: Path) -> list[Path]:
     Generic framework dependencies keep their application-version boundary.
     """
     paths = runtime_resources(entrypoint)
-    bundled = Path(__file__).resolve().parents[1] / "plugins/bundled"
+    skill_root = Path(__file__).resolve().parent
+    bundled = skill_root / "bundled"
     if not entrypoint.is_relative_to(bundled):
         return paths
+    dependencies = [skill_root / "runtime_support.py"]
     name = entrypoint.parent.name
-    dependencies = []
     if name in {"financial-commentary", "industry-commentary", "industry-deep-dive"}:
-        dependencies.append(bundled / "report-generation/reporting.py")
-    elif name == "deep-investment-report":
         dependencies.extend(
-            bundled / "analysis-modeling/skills/earnings-forecast/scripts" / filename
-            for filename in ("models.py", "forecast.py")
+            (skill_root / "_shared/__init__.py", skill_root / "_shared/reporting.py")
+        )
+    if name in {"earnings-forecast", "deep-investment-report"}:
+        dependencies.append(skill_root / "_shared/__init__.py")
+        dependencies.extend(
+            skill_root / "_shared/forecasting" / filename
+            for filename in ("__init__.py", "models.py", "forecast.py")
         )
     from researchx.skills.resources import resolve_resource
 
     for path in dependencies:
-        resolve_resource(bundled, path)
+        resolve_resource(skill_root, path)
         paths.append(path)
     return sorted(paths, key=lambda path: _hash_name(entrypoint, path))
 
 
 def _hash_name(entrypoint: Path, path: Path) -> str:
-    base = entrypoint.parent
-    if path.is_relative_to(base):
-        return path.relative_to(base).as_posix()
-    bundled = Path(__file__).resolve().parents[1] / "plugins/bundled"
-    return "@plugin/" + path.relative_to(bundled).as_posix()
+    if path.is_relative_to(entrypoint.parent):
+        return path.relative_to(entrypoint.parent).as_posix()
+    return "@shared/" + path.relative_to(Path(__file__).resolve().parent).as_posix()
 
 
 def _installed_index_record(entrypoint: Path) -> HashRecord | None:
@@ -72,7 +74,7 @@ def _installed_index_record(entrypoint: Path) -> HashRecord | None:
     from base64 import urlsafe_b64decode
     from importlib.metadata import distribution, PackageNotFoundError
 
-    bundled = Path(__file__).resolve().parents[1] / "plugins/bundled"
+    bundled = Path(__file__).resolve().parent
     index = bundled / "skill-index.json"
     if not entrypoint.is_relative_to(bundled) or not index.is_file():
         return None
@@ -84,7 +86,7 @@ def _installed_index_record(entrypoint: Path) -> HashRecord | None:
         entry = manifest["skills"][entrypoint.relative_to(bundled).as_posix()]
         dist = distribution("researchx-ai")
         files = {str(file): file for file in dist.files or []}
-        index_file = files["researchx/plugins/bundled/skill-index.json"]
+        index_file = files["researchx/skills/skill-index.json"]
         if (
             not index_file.hash
             or index_file.hash.mode != "sha256"
@@ -102,7 +104,7 @@ def _installed_index_record(entrypoint: Path) -> HashRecord | None:
         for path in paths:
             relative = path.relative_to(bundled).as_posix()
             expected = entry["resources"][relative]
-            recorded = files["researchx/plugins/bundled/" + relative]
+            recorded = files["researchx/skills/" + relative]
             if not recorded.hash or recorded.hash.mode != "sha256":
                 return None
             if urlsafe_b64decode(recorded.hash.value + "==").hex() != expected["sha256"]:
@@ -256,7 +258,7 @@ def main() -> None:
     parser.add_argument("root", type=Path)
     parser.add_argument("--verify", action="store_true", help="Bypass matching fingerprint caches")
     args = parser.parse_args()
-    entries = [args.root] if args.root.is_file() else sorted(args.root.glob("*/skills/*/SKILL.md"))
+    entries = [args.root] if args.root.is_file() else sorted(args.root.glob("bundled/*/SKILL.md"))
     if not entries and args.root.is_dir():
         entries = sorted(args.root.glob("skills/*/SKILL.md"))
     if not entries and args.root.is_dir():

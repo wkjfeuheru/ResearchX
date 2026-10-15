@@ -20,6 +20,7 @@ from researchx.engine.messages import (
 )
 
 MEMORY_KEYS = {
+    "items",
     "conflicts",
     "arbitrations",
     "conclusions",
@@ -233,6 +234,8 @@ async def compose_research_context(
     policy: ContextComponentsSettings | None = None,
     legacy_budget: int = 6000,
     enabled: bool = True,
+    auto_summary_max_tokens: int = 1500,
+    auto_index_max_items: int = 12,
 ) -> ContextSnapshot:
     from researchx.services.context.budget import budget_limits
     from researchx.services.context.token_estimation import estimate_tokens
@@ -245,43 +248,30 @@ async def compose_research_context(
     quota = (
         min(legacy_budget, targets["memory"], maxima["memory"]) if policy.enabled else legacy_budget
     )
-    current = await store.load()
-    recalled = await store.prompt_snapshot(
-        legacy_budget, model=model, memory_budget=quota, memory=current
+    from researchx.state.episodes import EpisodicRepository
+
+    summary = await EpisodicRepository(store.workspace_id, store.session_id).context_summary(
+        max_items=auto_index_max_items
     )
-    used = sum(
-        estimate_tokens(recalled.text[span.start : span.end], model)
-        for span in recalled.manifest
-        if span.component == "memory"
-    )
-    snapshots = [base, recalled]
-    if runtime and current and current.project:
-        project = runtime.repository._project(current)
-        text = await runtime.build_research_context(project.id)
-        workspace = tagged_snapshot(text, "workspace_memory")
-        amount = sum(
-            estimate_tokens(text[span.start : span.end], model)
-            for span in workspace.manifest
-            if span.component == "memory"
-        )
-        if amount > max(0, quota - used):
-            # Keep complete records on disk; defer the entire Markdown recall.
-            start = text.index("{")
-            packet, end = json.JSONDecoder().raw_decode(text, start)
-            packet.update(
-                content="",
-                truncated=True,
-                notice="Workspace memory deferred by request budget; read needed records with read_file.",
-            )
-            body = (
-                json.dumps(packet, ensure_ascii=False)
-                .replace("<", "\\u003c")
-                .replace(">", "\\u003e")
-            )
-            text = text[:start] + body + text[end:]
-            workspace = tagged_snapshot(text, "workspace_memory")
-        snapshots.append(workspace)
-    return combine_snapshots(snapshots)
+    summary["memory_path"] = "MEMORY.md"
+    summary["notice"] = "详细记录使用 research_memory.search/read；研究笔记使用 read_file。"
+    budget = max(0, min(legacy_budget, quota, auto_summary_max_tokens))
+
+    def packet() -> str:
+        return "<research_memory>\n" + json.dumps(summary, ensure_ascii=False).replace(
+            "<", "\\u003c"
+        ).replace(">", "\\u003e") + "\n</research_memory>"
+
+    items = summary["items"]
+    assert isinstance(items, list)
+    while items and estimate_tokens(packet(), model) > budget:
+        items.pop()
+    if estimate_tokens(packet(), model) > budget:
+        summary["unresolved"] = []
+        summary["next_step"] = ""
+    if estimate_tokens(packet(), model) > budget:
+        return base
+    return combine_snapshots([base, tagged_snapshot(packet(), "research_store")])
 
 
 def refresh_runtime_messages(
