@@ -258,9 +258,13 @@ async def compose_research_context(
     budget = max(0, min(legacy_budget, quota, auto_summary_max_tokens))
 
     def packet() -> str:
-        return "<research_memory>\n" + json.dumps(summary, ensure_ascii=False).replace(
-            "<", "\\u003c"
-        ).replace(">", "\\u003e") + "\n</research_memory>"
+        return (
+            "<research_memory>\n"
+            + json.dumps(summary, ensure_ascii=False)
+            .replace("<", "\\u003c")
+            .replace(">", "\\u003e")
+            + "\n</research_memory>"
+        )
 
     items = summary["items"]
     assert isinstance(items, list)

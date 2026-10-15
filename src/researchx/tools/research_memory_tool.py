@@ -122,9 +122,10 @@ class ResearchMemoryTool(BaseTool[ResearchMemoryInput]):
                     operation = operation.model_copy(update={"limit": default})
                 if operation.limit > maximum:
                     raise ResearchError(f"研究记录查询 limit 不得超过 {maximum}")
-            if arguments.operation.action in LEGACY_STATE_MIGRATION and (
-                await store.load()
-            ).project is not None:
+            if (
+                arguments.operation.action in LEGACY_STATE_MIGRATION
+                and (await store.load()).project is not None
+            ):
                 return ToolResult(
                     output="Legacy plan/task writes cannot bypass Runtime. "
                     + LEGACY_STATE_MIGRATION[arguments.operation.action],
@@ -139,8 +140,10 @@ class ResearchMemoryTool(BaseTool[ResearchMemoryInput]):
         except (ResearchError, ValueError) as exc:
             return ToolResult(output=str(exc), is_error=True)
         progress = (
-            receipt["progress"] if "progress" in receipt
-            else None if arguments.operation.action in {"search", "read"}
+            receipt["progress"]
+            if "progress" in receipt
+            else None
+            if arguments.operation.action in {"search", "read"}
             else await store.progress()
         )
         detail = {

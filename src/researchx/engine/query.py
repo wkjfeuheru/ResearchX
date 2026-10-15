@@ -523,7 +523,9 @@ async def run_query(
                     if isinstance(block, ImageBlock):
                         try:
                             image_hashes.add(
-                                hashlib.sha256(base64.b64decode(block.data, validate=True)).hexdigest()
+                                hashlib.sha256(
+                                    base64.b64decode(block.data, validate=True)
+                                ).hexdigest()
                             )
                         except (ValueError, binascii.Error):
                             yield ErrorEvent(message="图像数据编码无效。"), None

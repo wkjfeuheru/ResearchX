@@ -15,7 +15,8 @@ def collected_usage(tool_name: str, spec: Mapping[str, object]) -> SourceUsage:
     """Only built-in public collection may mark data usable by an external model."""
     if (
         spec.get("kind") == "tool"
-        and tool_name in {
+        and tool_name
+        in {
             "write_file",
             "edit_file",
             "glob",
@@ -160,7 +161,9 @@ def history_use_gap(memory: object, messages: Sequence[object]) -> str | None:
     return None
 
 
-def image_use_allowed(memory: object, digest: str, approved_artifact_hashes: set[str] | None = None) -> bool:
+def image_use_allowed(
+    memory: object, digest: str, approved_artifact_hashes: set[str] | None = None
+) -> bool:
     from researchx.state.models import ResearchMemory
 
     assert isinstance(memory, ResearchMemory)
@@ -264,7 +267,8 @@ async def request_policy_view(
                     source_id in records
                     and records[source_id][0] == "source"
                     and (
-                        (source := SourceRecord.model_validate(records[source_id][1])).kind == "user"
+                        (source := SourceRecord.model_validate(records[source_id][1])).kind
+                        == "user"
                         or may_enter_external_model(source.usage)
                     )
                     for source_id in sources
@@ -282,8 +286,7 @@ async def request_policy_view(
                 )
             ).all()
             memory.evidence_pool = {
-                item.id: item
-                for item in (Evidence.model_validate(row) for row in evidence_rows)
+                item.id: item for item in (Evidence.model_validate(row) for row in evidence_rows)
             }
             source_ids.update(item.source_id for item in memory.evidence_pool.values())
         source_table = s.entities["sources"]
@@ -299,11 +302,8 @@ async def request_policy_view(
                 if image_hashes:
                     branches.append(source_table.c.content_hash.in_(image_hashes))
                 criteria.append(or_(*branches))
-            source_rows = (
-                await db.scalars(select(source_table.c.payload).where(*criteria))
-            ).all()
+            source_rows = (await db.scalars(select(source_table.c.payload).where(*criteria))).all()
             memory.sources = {
-                item.id: item
-                for item in (SourceRecord.model_validate(row) for row in source_rows)
+                item.id: item for item in (SourceRecord.model_validate(row) for row in source_rows)
             }
     return memory, approved_artifact_hashes

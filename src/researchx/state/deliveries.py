@@ -111,7 +111,11 @@ class DeliveryService:
     async def classify_source(
         self, source_id: str, usage: SourceUsage, *, principal: TrustedReviewer | None
     ) -> None:
-        local = principal is not None and principal.issuer == "local_workstation" and principal.role == "researcher"
+        local = (
+            principal is not None
+            and principal.issuer == "local_workstation"
+            and principal.role == "researcher"
+        )
         institution = (
             principal is not None
             and principal.issuer == "trusted_identity_provider"

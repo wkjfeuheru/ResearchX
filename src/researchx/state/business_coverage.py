@@ -96,8 +96,7 @@ def _spec_gaps(memory: ResearchMemory, spec: ResearchSpec, as_of: datetime) -> l
         bases = [
             evidence.fact_basis
             for evidence in memory.evidence_pool.values()
-            if evidence.fact_basis is not None
-            and evidence.status in {"source_checked", "verified"}
+            if evidence.fact_basis is not None and evidence.status in {"source_checked", "verified"}
         ]
         foreign = [
             basis
@@ -120,9 +119,7 @@ def _spec_gaps(memory: ResearchMemory, spec: ResearchSpec, as_of: datetime) -> l
             gaps.append("累计与单季口径不能混用")
         if spec.required_metrics:
             present = {
-                basis.metric_id
-                for basis in matched
-                if basis is not None and basis.metric_id
+                basis.metric_id for basis in matched if basis is not None and basis.metric_id
             }
             missing = [metric for metric in spec.required_metrics if metric not in present]
             if missing and not any(

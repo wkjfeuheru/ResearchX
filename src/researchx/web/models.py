@@ -48,19 +48,22 @@ class CommandRequest(BaseModel):
     target_request_id: str | None = Field(default=None, max_length=100)
     text: str = Field(default="", max_length=100_000)
     profile_id: str | None = Field(default=None, max_length=100)
-    research_type: Literal[
-        "event_commentary",
-        "financial_commentary",
-        "financial-statement-analysis",
-        "financial-commentary",
-        "company-event-monitor",
-        "research-report-digest",
-        "earnings-forecast",
-        "industry-commentary",
-        "industry-deep-dive",
-        "deep-investment-report",
-        "generic-research",
-    ] | None = None
+    research_type: (
+        Literal[
+            "event_commentary",
+            "financial_commentary",
+            "financial-statement-analysis",
+            "financial-commentary",
+            "company-event-monitor",
+            "research-report-digest",
+            "earnings-forecast",
+            "industry-commentary",
+            "industry-deep-dive",
+            "deep-investment-report",
+            "generic-research",
+        ]
+        | None
+    ) = None
     attachment_ids: list[str] = Field(default_factory=list, max_length=10)
     prompt_id: str | None = Field(default=None, max_length=100)
     answer: str = Field(default="", max_length=100_000)

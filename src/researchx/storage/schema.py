@@ -554,8 +554,18 @@ research_runs = _workspace_asset(
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
 )
-Index("ix_research_runs_session", research_runs.c.workspace_id, research_runs.c.session_id, research_runs.c.status)
-Index("ix_research_runs_project", research_runs.c.workspace_id, research_runs.c.project_id, research_runs.c.status)
+Index(
+    "ix_research_runs_session",
+    research_runs.c.workspace_id,
+    research_runs.c.session_id,
+    research_runs.c.status,
+)
+Index(
+    "ix_research_runs_project",
+    research_runs.c.workspace_id,
+    research_runs.c.project_id,
+    research_runs.c.status,
+)
 research_run_prompts = _workspace_asset(
     "research_run_prompts",
     Column("prompt_id", Text, primary_key=True),
@@ -599,4 +609,8 @@ asset_dependencies = _workspace_asset(
     Column("downstream_id", Text, primary_key=True),
     Column("kind", Text, nullable=False),
 )
-Index("ix_asset_dependencies_downstream", asset_dependencies.c.workspace_id, asset_dependencies.c.downstream_id)
+Index(
+    "ix_asset_dependencies_downstream",
+    asset_dependencies.c.workspace_id,
+    asset_dependencies.c.downstream_id,
+)

@@ -64,7 +64,9 @@ class ResearchApplication:
             elif str(reply).strip() == "财报点评":
                 selected = "financial_commentary"
             else:
-                return AdmissionResult(False, "研究类型不明确，请由发起人确认事件点评或财报点评后重试。")
+                return AdmissionResult(
+                    False, "研究类型不明确，请由发起人确认事件点评或财报点评后重试。"
+                )
         coverage_profile: Profile = selected or classify_request(text)
         window = evaluate_coverage(await self.store.load(), coverage_profile, text)
         return AdmissionResult(True, profile=selected, message=window.model_dump_json())
@@ -80,7 +82,11 @@ class ResearchApplication:
             defect = await guard(tool_name)
             if defect:
                 return AdmissionResult(False, str(defect))
-        if self.store is None or project_mode or tool_name in {"research_memory", "ask_user_question", "skill"}:
+        if (
+            self.store is None
+            or project_mode
+            or tool_name in {"research_memory", "ask_user_question", "skill"}
+        ):
             return AdmissionResult(True)
         memory = await self.store.load()
         if memory.research_state.replan_required:
@@ -109,29 +115,37 @@ class ResearchApplication:
         queries = 0
         async with current_database().transaction() as db:
             session = (
-                await db.execute(
-                    select(
-                        research_sessions.c.research_state,
-                        research_sessions.c.revision,
-                    ).where(
-                        research_sessions.c.workspace_id == store.workspace_id,
-                        research_sessions.c.session_id == store.session_id,
+                (
+                    await db.execute(
+                        select(
+                            research_sessions.c.research_state,
+                            research_sessions.c.revision,
+                        ).where(
+                            research_sessions.c.workspace_id == store.workspace_id,
+                            research_sessions.c.session_id == store.session_id,
+                        )
                     )
                 )
-            ).mappings().one()
+                .mappings()
+                .one()
+            )
             queries += 1
             plans = (
-                await db.execute(
-                    select(
-                        research_plans.c.record_id,
-                        research_plans.c.revision,
-                    ).where(
-                        research_plans.c.workspace_id == store.workspace_id,
-                        research_plans.c.session_id == store.session_id,
-                        research_plans.c.project_id == project_id,
+                (
+                    await db.execute(
+                        select(
+                            research_plans.c.record_id,
+                            research_plans.c.revision,
+                        ).where(
+                            research_plans.c.workspace_id == store.workspace_id,
+                            research_plans.c.session_id == store.session_id,
+                            research_plans.c.project_id == project_id,
+                        )
                     )
                 )
-            ).mappings().all()
+                .mappings()
+                .all()
+            )
             queries += 1
             plan_ids = [row["record_id"] for row in plans]
             tasks: list[RowMapping] = []
@@ -156,10 +170,7 @@ class ResearchApplication:
             "revision": session["revision"],
             "epoch": state.get("epoch", session["revision"]),
             "goal": state.get("next_step", ""),
-            "plans": [
-                {"id": row["record_id"], "revision": row["revision"]}
-                for row in plans
-            ],
+            "plans": [{"id": row["record_id"], "revision": row["revision"]} for row in plans],
             "tasks": [dict(row) for row in tasks],
             "query_count": queries,
         }

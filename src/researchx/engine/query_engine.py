@@ -371,9 +371,7 @@ class QueryEngine:
                 title="用户提供资料",
                 locator=f"message:{origin}",
                 request_profile=(
-                    selected
-                    if selected in {"event_commentary", "financial_commentary"}
-                    else None
+                    selected if selected in {"event_commentary", "financial_commentary"} else None
                 ),
             )
             self._tool_metadata["latest_user_source_id"] = source.id
@@ -476,7 +474,10 @@ class QueryEngine:
                             ),
                             "",
                         )
-                        from researchx.state.business_coverage import answer_profiles, evaluate_coverage
+                        from researchx.state.business_coverage import (
+                            answer_profiles,
+                            evaluate_coverage,
+                        )
 
                         profile, freeze_profile = answer_profiles(
                             user_request, self._tool_metadata.get("current_business_profile")
