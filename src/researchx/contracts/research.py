@@ -300,7 +300,9 @@ def completeness_for(
 ) -> Literal["complete", "partial", "blocked"]:
     if not checks:
         return "blocked"
-    if checks.get("source_checks") == "blocked" or all(value == "failed" for value in checks.values()):
+    if checks.get("source_checks") == "blocked" or all(
+        value == "failed" for value in checks.values()
+    ):
         return "blocked"
     if all(value == "passed" for value in checks.values()):
         return "complete"
@@ -354,14 +356,16 @@ def certificate_from_checks(
         artifact_version_id=artifact_version_id,
         execution_state=execution_state,
         checks=checks,
-        completeness="blocked" if execution_state == "failed" and not any(
-            value == "passed" for value in checks.values()
-        ) else completeness_for(checks),
+        completeness="blocked"
+        if execution_state == "failed" and not any(value == "passed" for value in checks.values())
+        else completeness_for(checks),
         gaps=gaps,
     )
 
 
-def assert_comparable(left_metric: str, left: FactBasis, right_metric: str, right: FactBasis) -> None:
+def assert_comparable(
+    left_metric: str, left: FactBasis, right_metric: str, right: FactBasis
+) -> None:
     if left_metric != right_metric or not comparable_facts(left, right):
         raise ValueError("同比比较必须同时匹配指标、证券、报表口径、期间类型、单位和调整方式")
 
@@ -391,7 +395,9 @@ def reuse_gap(
     return ""
 
 
-def bind_claims(kind: str, *, observation_ids: list[str], conclusion_id: str, model_run_id: str) -> str:
+def bind_claims(
+    kind: str, *, observation_ids: list[str], conclusion_id: str, model_run_id: str
+) -> str:
     if kind == "fact" and not observation_ids:
         return "事实段落未绑定观察对象或已检查证据"
     if kind == "inference" and not conclusion_id:
@@ -433,5 +439,7 @@ def _require_amount_basis(label: str, amount: object) -> None:
     references = amount.get("references") or []
     if not isinstance(basis, dict) or not basis.get("unit") or not basis.get("security_code"):
         raise ValueError(f"{label}: 生产计算拒绝缺少财务口径")
-    if not references or any(not isinstance(item, dict) or not item.get("evidence_id") for item in references):
+    if not references or any(
+        not isinstance(item, dict) or not item.get("evidence_id") for item in references
+    ):
         raise ValueError(f"{label}: 生产计算拒绝缺少数值引用")

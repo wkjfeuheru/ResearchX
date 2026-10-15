@@ -261,8 +261,16 @@ def calculate_financial(result: FinancialResult) -> FinancialResult:
             for key in ("revenue", "net_profit", "parent_net_profit"):
                 left = current.items.get(key)
                 right = prior.items.get(key)
-                left_metric = (left.fact_basis.metric_id if left and left.fact_basis and left.fact_basis.metric_id else key)
-                right_metric = (right.fact_basis.metric_id if right and right.fact_basis and right.fact_basis.metric_id else key)
+                left_metric = (
+                    left.fact_basis.metric_id
+                    if left and left.fact_basis and left.fact_basis.metric_id
+                    else key
+                )
+                right_metric = (
+                    right.fact_basis.metric_id
+                    if right and right.fact_basis and right.fact_basis.metric_id
+                    else key
+                )
                 if (
                     left is None
                     or right is None

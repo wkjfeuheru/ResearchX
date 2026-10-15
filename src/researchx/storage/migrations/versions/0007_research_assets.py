@@ -32,10 +32,14 @@ def upgrade() -> None:
 
     bind = op.get_bind()
     existing = set(sa.inspect(bind).get_table_names())
-    pending = [table for name, table in metadata.tables.items() if name in _TABLES and name not in existing]
+    pending = [
+        table for name, table in metadata.tables.items() if name in _TABLES and name not in existing
+    ]
     if pending:
         metadata.create_all(bind, tables=pending, checkfirst=True)
-    columns = {column["name"] for column in sa.inspect(bind).get_columns("research_review_decisions")}
+    columns = {
+        column["name"] for column in sa.inspect(bind).get_columns("research_review_decisions")
+    }
     if "reviewed_claim_ids" not in columns:
         op.add_column(
             "research_review_decisions",

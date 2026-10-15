@@ -34,25 +34,48 @@ READ_TABLES = {
     **EPISODE_TABLES,
 }
 
-PROVENANCE_FIELDS = frozenset({
-    "source_id", "corrects_source_id", "evidence_id", "evidence_ids",
-    "supporting_evidence_ids", "input_evidence_ids", "additional_evidence_ids",
-    "assumption_evidence_ids", "evidence_versions", "step_ids",
-    "prior_step_ids", "verification_step_id", "calculation_step_id",
-    "conclusion_ids", "finding_ids", "input_artifact_ids", "supersedes",
-    "reused_evidence_ids", "artifact_ids",
-})
+PROVENANCE_FIELDS = frozenset(
+    {
+        "source_id",
+        "corrects_source_id",
+        "evidence_id",
+        "evidence_ids",
+        "supporting_evidence_ids",
+        "input_evidence_ids",
+        "additional_evidence_ids",
+        "assumption_evidence_ids",
+        "evidence_versions",
+        "step_ids",
+        "prior_step_ids",
+        "verification_step_id",
+        "calculation_step_id",
+        "conclusion_ids",
+        "finding_ids",
+        "input_artifact_ids",
+        "supersedes",
+        "reused_evidence_ids",
+        "artifact_ids",
+    }
+)
 
 PROVENANCE_TARGETS = {
-    "source_id": "source", "corrects_source_id": "source",
-    "evidence_id": "evidence", "evidence_ids": "evidence",
-    "supporting_evidence_ids": "evidence", "input_evidence_ids": "evidence",
-    "additional_evidence_ids": "evidence", "assumption_evidence_ids": "evidence",
-    "reused_evidence_ids": "evidence", "evidence_versions": "evidence",
-    "step_ids": "reasoning", "prior_step_ids": "reasoning",
-    "verification_step_id": "reasoning", "calculation_step_id": "reasoning",
+    "source_id": "source",
+    "corrects_source_id": "source",
+    "evidence_id": "evidence",
+    "evidence_ids": "evidence",
+    "supporting_evidence_ids": "evidence",
+    "input_evidence_ids": "evidence",
+    "additional_evidence_ids": "evidence",
+    "assumption_evidence_ids": "evidence",
+    "reused_evidence_ids": "evidence",
+    "evidence_versions": "evidence",
+    "step_ids": "reasoning",
+    "prior_step_ids": "reasoning",
+    "verification_step_id": "reasoning",
+    "calculation_step_id": "reasoning",
     "conclusion_ids": "conclusion",
-    "input_artifact_ids": "artifact", "artifact_ids": "artifact",
+    "input_artifact_ids": "artifact",
+    "artifact_ids": "artifact",
 }
 
 
@@ -137,25 +160,26 @@ class EpisodicRepository:
                 rows = (await db.execute(union_all(*branches))).mappings().all()
                 if len({row["record_id"] for row in rows}) != len(rows):
                     raise ResearchError("研究记录 ID 在多个类型中重复，请按类型消除歧义")
-                found = {
-                    row["record_id"]: (row["kind"], dict(row["payload"]))
-                    for row in rows
-                }
+                found = {row["record_id"]: (row["kind"], dict(row["payload"])) for row in rows}
                 if any(key not in found and key not in records for key in ids):
                     raise ResearchError("未知的研究记录 ID")
                 plan_ids = [key for key, (kind, _) in found.items() if kind == "plan"]
                 if plan_ids:
                     tasks = (
-                        await db.execute(
-                            select(s.research_tasks.c.plan_id, s.research_tasks.c.payload)
-                            .where(
-                                s.research_tasks.c.workspace_id == self.workspace_id,
-                                s.research_tasks.c.session_id == self.session_id,
-                                s.research_tasks.c.plan_id.in_(plan_ids),
+                        (
+                            await db.execute(
+                                select(s.research_tasks.c.plan_id, s.research_tasks.c.payload)
+                                .where(
+                                    s.research_tasks.c.workspace_id == self.workspace_id,
+                                    s.research_tasks.c.session_id == self.session_id,
+                                    s.research_tasks.c.plan_id.in_(plan_ids),
+                                )
+                                .order_by(s.research_tasks.c.position)
                             )
-                            .order_by(s.research_tasks.c.position)
                         )
-                    ).mappings().all()
+                        .mappings()
+                        .all()
+                    )
                     for row in tasks:
                         found[row["plan_id"]][1].setdefault("tasks", []).append(row["payload"])
                 records.update(found)
@@ -182,17 +206,19 @@ class EpisodicRepository:
             kind, payload = records[record_id]
             if kind == "source":
                 return {record_id}
-            return set().union(
-                *(sources_for(ref, visited) for ref in _provenance_refs(payload))
-            )
+            return set().union(*(sources_for(ref, visited) for ref in _provenance_refs(payload)))
 
         return revision, records, {key: sources_for(key) for key in ids}
 
     @staticmethod
     def _cursor_encode(payload: dict[str, Any]) -> str:
-        return base64.urlsafe_b64encode(
-            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-        ).decode().rstrip("=")
+        return (
+            base64.urlsafe_b64encode(
+                json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+            )
+            .decode()
+            .rstrip("=")
+        )
 
     @staticmethod
     def _cursor_decode(cursor: str) -> dict[str, Any]:
@@ -243,8 +269,10 @@ class EpisodicRepository:
                 if saved.get("revision") != revision:
                     raise ResearchError("研究记录游标已过期，请重新检索")
                 after = saved.get("after")
-                if not isinstance(after, list) or len(after) != 2 or not all(
-                    isinstance(value, str) for value in after
+                if (
+                    not isinstance(after, list)
+                    or len(after) != 2
+                    or not all(isinstance(value, str) for value in after)
                 ):
                     raise ResearchError("无效的研究记录游标")
             branches = []
@@ -252,7 +280,8 @@ class EpisodicRepository:
                 table = EPISODE_TABLES[record_type]
                 status = (
                     case((table.c.payload["stale"].as_boolean().is_(True), "stale"), else_="active")
-                    if record_type == "artifact" else table.c.status
+                    if record_type == "artifact"
+                    else table.c.status
                 )
                 conditions = [
                     table.c.workspace_id == self.workspace_id,
@@ -267,7 +296,9 @@ class EpisodicRepository:
                 elif record_type in {"evidence", "conclusion"}:
                     conditions.append(or_(status.is_(None), status != "retracted"))
                 if query.query:
-                    conditions.append(cast(table.c.payload, String).contains(query.query, autoescape=True))
+                    conditions.append(
+                        cast(table.c.payload, String).contains(query.query, autoescape=True)
+                    )
                 branches.append(
                     select(
                         literal(record_type).label("record_type"),
@@ -287,10 +318,16 @@ class EpisodicRepository:
                     )
                 )
             rows = (
-                await db.execute(
-                    statement.order_by(catalog.c.record_type, catalog.c.record_id).limit(query.limit + 1)
+                (
+                    await db.execute(
+                        statement.order_by(catalog.c.record_type, catalog.c.record_id).limit(
+                            query.limit + 1
+                        )
+                    )
                 )
-            ).mappings().all()
+                .mappings()
+                .all()
+            )
         page = rows[: query.limit]
         items = [
             {
@@ -322,15 +359,19 @@ class EpisodicRepository:
             raise ValueError("max_items must be in 0..100")
         async with current_database().transaction() as db:
             header = (
-                await db.execute(
-                    select(s.research_sessions.c.revision, s.research_sessions.c.research_state)
-                    .where(
-                        s.research_sessions.c.workspace_id == self.workspace_id,
-                        s.research_sessions.c.session_id == self.session_id,
+                (
+                    await db.execute(
+                        select(s.research_sessions.c.revision, s.research_sessions.c.research_state)
+                        .where(
+                            s.research_sessions.c.workspace_id == self.workspace_id,
+                            s.research_sessions.c.session_id == self.session_id,
+                        )
+                        .with_for_update(read=True)
                     )
-                    .with_for_update(read=True)
                 )
-            ).mappings().one_or_none()
+                .mappings()
+                .one_or_none()
+            )
             if header is None:
                 raise ResearchError("研究会话不存在")
             state = header["research_state"] or {}
@@ -364,19 +405,23 @@ class EpisodicRepository:
             # the operation/history tables for automatic recall.
             branches = []
             for kind, table in (
-                    ("artifact", s.entities["artifacts"]),
-                    ("conclusion", s.entities["conclusions"]),
-                    ("evidence", s.entities["evidence_pool"]),
-                ):
+                ("artifact", s.entities["artifacts"]),
+                ("conclusion", s.entities["conclusions"]),
+                ("evidence", s.entities["evidence_pool"]),
+            ):
                 status = (
                     case((table.c.payload["stale"].as_boolean().is_(True), "stale"), else_="active")
-                    if kind == "artifact" else table.c.status
+                    if kind == "artifact"
+                    else table.c.status
                 )
                 branches.append(
                     select(
-                        literal(kind).label("kind"), table.c.record_id.label("id"),
-                        table.c.task_id.label("task_id"), status.label("status"),
-                        table.c.revision.label("version"), table.c.position.label("position"),
+                        literal(kind).label("kind"),
+                        table.c.record_id.label("id"),
+                        table.c.task_id.label("task_id"),
+                        status.label("status"),
+                        table.c.revision.label("version"),
+                        table.c.position.label("position"),
                     ).where(
                         table.c.workspace_id == self.workspace_id,
                         table.c.session_id == self.session_id,
@@ -384,36 +429,61 @@ class EpisodicRepository:
                 )
             catalog = union_all(*branches).subquery()
             items = (
-                await db.execute(
-                    select(catalog)
-                    .where(or_(catalog.c.status.is_(None), catalog.c.status.not_in(("retracted", "stale"))))
-                    .order_by(
-                        (catalog.c.task_id == state.get("current_task_id")).desc()
-                        if state.get("current_task_id") else catalog.c.position.desc(),
-                        catalog.c.position.desc(), catalog.c.kind, catalog.c.id,
+                (
+                    await db.execute(
+                        select(catalog)
+                        .where(
+                            or_(
+                                catalog.c.status.is_(None),
+                                catalog.c.status.not_in(("retracted", "stale")),
+                            )
+                        )
+                        .order_by(
+                            (catalog.c.task_id == state.get("current_task_id")).desc()
+                            if state.get("current_task_id")
+                            else catalog.c.position.desc(),
+                            catalog.c.position.desc(),
+                            catalog.c.kind,
+                            catalog.c.id,
+                        )
+                        .limit(max_items)
                     )
-                    .limit(max_items)
                 )
-            ).mappings().all() if max_items else []
+                .mappings()
+                .all()
+                if max_items
+                else []
+            )
         return {
             "workspace_id": self.workspace_id,
             "session_id": self.session_id,
             "project_id": project.get("id") if project else None,
             "revision": header["revision"],
             "objective": str((objective or {}).get("subject", ""))[:160],
-            "requirements": [str(item)[:160] for item in (objective or {}).get("requirements", [])[:3]],
-            "deliverables": [str(item)[:160] for item in (objective or {}).get("deliverables", [])[:3]],
+            "requirements": [
+                str(item)[:160] for item in (objective or {}).get("requirements", [])[:3]
+            ],
+            "deliverables": [
+                str(item)[:160] for item in (objective or {}).get("deliverables", [])[:3]
+            ],
             "feedback": [str(item)[:160] for item in (project or {}).get("feedback", [])[-3:]],
             "current_task": {
                 "id": state.get("current_task_id"),
                 "title": str((task or {}).get("title", ""))[:160],
                 "status": (task or {}).get("status"),
-            } if state.get("current_task_id") else None,
+            }
+            if state.get("current_task_id")
+            else None,
             "unresolved": [str(item)[:160] for item in state.get("unresolved", [])[:3]],
             "next_step": str(state.get("next_step", ""))[:160],
             "items": [
-                {"id": row["id"], "type": row["kind"], "task_id": row["task_id"],
-                 "status": row["status"] or "active", "version": row["version"] or 1}
+                {
+                    "id": row["id"],
+                    "type": row["kind"],
+                    "task_id": row["task_id"],
+                    "status": row["status"] or "active",
+                    "version": row["version"] or 1,
+                }
                 for row in items
             ],
         }

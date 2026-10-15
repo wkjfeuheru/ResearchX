@@ -33,7 +33,13 @@ from researchx.web.catalog import (
     skill_detail,
     toggle_skill,
 )
-from researchx.web.models import ModelInput, SessionInput, SkillToggle, CommandRequest, ReviewRequest
+from researchx.web.models import (
+    ModelInput,
+    SessionInput,
+    SkillToggle,
+    CommandRequest,
+    ReviewRequest,
+)
 from researchx.web.runtime import SessionController
 from researchx.web.redaction import Redactor
 from researchx.web.session_view import session_view
@@ -458,7 +464,8 @@ def create_app(cwd: str | None = None, static_dir: Path | None = None) -> FastAP
         if session_id in workspace.file_operations:
             raise HTTPException(409, "请等待文件操作完成，再删除对话")
         if (
-            connection and (connection.busy or connection.accepting or connection.queued_request is not None)
+            connection
+            and (connection.busy or connection.accepting or connection.queued_request is not None)
             or session_id in workspace._queued
         ):
             raise HTTPException(409, "请先停止当前生成，再删除对话")
@@ -533,13 +540,20 @@ def create_app(cwd: str | None = None, static_dir: Path | None = None) -> FastAP
                 # The browser needs the active request ID before it can accept
                 # replayed run events. Ready is connection-local, not logged.
                 connection.ready = True
-                yield encode_event(connection.redactor.clean({
-                    "type": "ready", "session_id": session_id,
-                    "request_id": connection.request_id,
-                    "connection_id": connection.connection_id,
-                    "session": session_view(record),
-                    "running": connection.busy or connection.queued_request is not None or connection.accepting,
-                }))
+                yield encode_event(
+                    connection.redactor.clean(
+                        {
+                            "type": "ready",
+                            "session_id": session_id,
+                            "request_id": connection.request_id,
+                            "connection_id": connection.connection_id,
+                            "session": session_view(record),
+                            "running": connection.busy
+                            or connection.queued_request is not None
+                            or connection.accepting,
+                        }
+                    )
+                )
                 for item in replay:
                     yield encode_event(item)
                 async for frame in connection.channel.stream():
@@ -564,7 +578,11 @@ def create_app(cwd: str | None = None, static_dir: Path | None = None) -> FastAP
                 raise HTTPException(409, "没有可控制的研究运行")
             connection = SessionController(session_id, workspace)
             connection.ready = True
-        elif connection_id and connection_id != connection.connection_id and session_id in workspace.connections:
+        elif (
+            connection_id
+            and connection_id != connection.connection_id
+            and session_id in workspace.connections
+        ):
             raise HTTPException(409, "命令不属于当前会话控制连接")
         return await connection.command(command)
 

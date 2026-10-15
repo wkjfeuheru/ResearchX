@@ -244,7 +244,9 @@ async def _execute_impl(
             tool_name, project_mode=project_mode, guard=guard
         )
         if not admission.allowed:
-            return ToolResultBlock(tool_use_id=tool_use_id, content=admission.message, is_error=True)
+            return ToolResultBlock(
+                tool_use_id=tool_use_id, content=admission.message, is_error=True
+            )
     if tool_name == "dispatch_subagents" and store is not None:
         from researchx.state.runtime import ResearchAgentRuntime
         from researchx.state.errors import ResearchError

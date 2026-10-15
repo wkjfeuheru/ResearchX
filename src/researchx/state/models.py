@@ -463,7 +463,11 @@ class ReadMemory(Record):
 class SearchMemory(Record):
     action: Literal["search"]
     query: str = Field(default="", max_length=200)
-    record_types: list[Literal["source", "evidence", "reasoning", "conclusion", "conflict", "arbitration", "artifact"]] = Field(default_factory=list)
+    record_types: list[
+        Literal[
+            "source", "evidence", "reasoning", "conclusion", "conflict", "arbitration", "artifact"
+        ]
+    ] = Field(default_factory=list)
     task_id: str | None = None
     status: str | None = None
     cursor: str | None = None
